@@ -1,0 +1,8 @@
+streamlit
+yfinance
+yahooquery
+ta
+mplfinance
+matplotlib
+pandas
+
