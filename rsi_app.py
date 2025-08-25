@@ -1,5 +1,6 @@
 import yfinance as yf
 import pandas as pd
+import streamlit as st
 
 def calculate_rsi(data, window=14):
     if data.empty:
@@ -31,9 +32,15 @@ def get_rsi_status(ticker, period="6mo", interval="1d"):
     except Exception as e:
         return f"❌ Error retrieving {ticker}: {e}"
 
-if __name__ == "__main__":
-    tickers = input("Enter stock tickers (comma separated): ").strip().upper().split(",")
-    tickers = [t.strip() for t in tickers if t.strip()]  # clean up whitespace
+# --- STREAMLIT UI ---
+st.title("📈 Stock RSI Checker")
+st.write("Enter one or more stock tickers to check their RSI status.")
+
+tickers_input = st.text_input("Stock Tickers (comma separated)", "AAPL, TSLA, MSFT")
+
+if st.button("Check RSI"):
+    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
     for t in tickers:
-        print(get_rsi_status(t))
+        status = get_rsi_status(t)
+        st.write(status)
 
