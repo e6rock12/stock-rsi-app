@@ -16,21 +16,25 @@ def calculate_rsi(data, window=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def get_rsi_status(ticker, period="6mo", interval="1d"):
+def get_rsi_status_and_data(ticker, period="6mo", interval="1d"):
     try:
         data = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
         rsi = calculate_rsi(data)
         if rsi is None or rsi.empty:
-            return f"⚠️ No data found for {ticker}"
+            return f"⚠️ No data found for {ticker}", None
         latest_rsi = rsi.iloc[-1]
+
         if latest_rsi > 70:
-            return f"📈 {ticker}: RSI {latest_rsi:.2f} → Overbought"
+            status = f"📈 {ticker}: RSI {latest_rsi:.2f} → Overbought"
         elif latest_rsi < 30:
-            return f"📉 {ticker}: RSI {latest_rsi:.2f} → Oversold"
+            status = f"📉 {ticker}: RSI {latest_rsi:.2f} → Oversold"
         else:
-            return f"➖ {ticker}: RSI {latest_rsi:.2f} → Neutral"
+            status = f"➖ {ticker}: RSI {latest_rsi:.2f} → Neutral"
+        
+        return status, rsi
     except Exception as e:
-        return f"❌ Error retrieving {ticker}: {e}"
+        return f"❌ Error retrieving {ticker}: {e}", None
+
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Stock RSI Checker", page_icon="📊", layout="centered")
@@ -48,6 +52,15 @@ if st.button("Check RSI"):
         st.warning("⚠️ Please enter at least one ticker.")
     else:
         for t in tickers:
-            status = get_rsi_status(t)
-            st.write(status)
+            status, rsi_data = get_rsi_status_and_data(t)
+            st.subheader(status)
+            
+            if rsi_data is not None:
+                st.line_chart(rsi_data, height=200)
+                # Add reference lines at RSI 30 and 70
+                st.markdown(
+                    "<span style='color:orange'>--- RSI 70 (Overbought)</span><br>"
+                    "<span style='color:blue'>--- RSI 30 (Oversold)</span>", 
+                    unsafe_allow_html=True
+                )
 
