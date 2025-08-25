@@ -61,20 +61,20 @@ if st.button("Analyze"):
                 st.error(f"❌ Could not retrieve data for {t}")
                 continue
 
-            # --- Key Stats ---
-	    latest_price = data["Close"].iloc[-1]
-            high_52wk = data["Close"].max()
-            low_52wk = data["Close"].min()
+                # --- Key Stats ---
+    latest_price = data["Close"].iloc[-1]
+    high_52wk = data["Close"].max()
+    low_52wk = data["Close"].min()
 
-            # Convert to floats (avoid Series formatting errors)
-            latest_price = float(latest_price)
-            high_52wk = float(high_52wk)
-            low_52wk = float(low_52wk)
+    # Convert to floats (avoid Series formatting errors)
+    latest_price = float(latest_price)
+    high_52wk = float(high_52wk)
+    low_52wk = float(low_52wk)
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Current Price", f"${latest_price:.2f}")
-            col2.metric("52-Week High", f"${high_52wk:.2f}")
-            col3.metric("52-Week Low", f"${low_52wk:.2f}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Current Price", f"${latest_price:.2f}")
+    col2.metric("52-Week High", f"${high_52wk:.2f}")
+    col3.metric("52-Week Low", f"${low_52wk:.2f}")
 
             # --- Charts ---
             chart_col1, chart_col2 = st.columns(2)
