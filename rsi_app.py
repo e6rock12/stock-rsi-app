@@ -2,205 +2,168 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
+from yahooquery import Screener
 
 # ---------- Helpers ----------
-def calculate_rsi(data, window=14):
-    if data.empty:
-        return None
-    delta = data["Close"].diff().dropna()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+def _extract_series(df: pd.DataFrame, col: str, ticker: str) -> pd.Series:
+    if col in df.columns:
+        return df[col]
+    else:
+        st.warning(f"{col} not found for {ticker}")
+        return pd.Series()
 
-def resolve_ticker(user_input):
-    """Try to resolve user input (ticker or company name)"""
+# ---------- Fetch Data ----------
+@st.cache_data(ttl=86400)
+def get_us_tickers():
+    """Fetch most active US tickers (up to 1000)"""
     try:
-        ticker = yf.Ticker(user_input)
-        info = ticker.info
-        if "shortName" in info:  # valid ticker
-            return user_input.upper(), info.get("shortName", "")
-    except:
-        pass
-
-    # Fallback: try search suggestions
-    try:
-        df = yf.search(user_input)
-        if not df.empty:
-            symbol = df.iloc[0]["symbol"]
-            name = df.iloc[0]["shortname"]
-            return symbol.upper(), name
-    except:
-        pass
-
-    return user_input.upper(), ""  # return raw if not resolvable
-
-def get_stock_data(ticker, period="1y", interval="1d"):
-    return yf.download(ticker, period=period, interval=interval, progress=False)
-
-def get_metrics(ticker, data):
-    info = yf.Ticker(ticker).info
-    metrics = {}
-    try:
-        metrics["Name"] = info.get("shortName", "")
-        metrics["Latest Price"] = float(data["Close"].iloc[-1])
-        metrics["52W High"] = float(data["Close"].max())
-        metrics["52W Low"] = float(data["Close"].min())
-        metrics["200d MA"] = float(data["Close"].rolling(200).mean().iloc[-1])
-        metrics["50d MA"] = float(data["Close"].rolling(50).mean().iloc[-1])
-        metrics["Golden Cross"] = metrics["50d MA"] > metrics["200d MA"]
-
-        rsi_series = calculate_rsi(data)
-        metrics["RSI"] = float(rsi_series.iloc[-1]) if rsi_series is not None else None
-
-        # Fundamentals
-        metrics["Forward PE"] = info.get("forwardPE", None)
-        metrics["EPS Growth"] = info.get("earningsQuarterlyGrowth", None)
-        metrics["Return on Capital"] = info.get("returnOnEquity", None)
-
+        s = Screener()
+        screen = s.get_screeners('most_actives', count=1000)
+        tickers = [item['symbol'] for item in screen['most_actives']['quotes']]
+        return tickers
     except Exception as e:
-        st.error(f"Error getting metrics for {ticker}: {e}")
-    return metrics
+        st.error(f"Error fetching US tickers: {e}")
+        return []
 
-def plot_chart(ticker, data):
-    plt.figure(figsize=(8, 4))
-    plt.plot(data.index, data["Close"], label="Close", color="blue")
-    plt.plot(data.index, data["Close"].rolling(50).mean(), label="50d MA", color="orange")
-    plt.plot(data.index, data["Close"].rolling(200).mean(), label="200d MA", color="red")
-    plt.title(f"{ticker} Price & Moving Averages")
-    plt.legend()
-    st.pyplot(plt)
-
-def color_metric(label, value, good_condition, bad_condition, suffix=""):
-    """Helper to return color-coded metrics"""
-    if value is None:
-        return f"- {label}: N/A"
+def get_company_name(ticker):
     try:
-        if good_condition(value):
-            return f"- {label}: <span style='color:green;font-weight:bold'>{value:.2f}{suffix}</span>"
-        elif bad_condition(value):
-            return f"- {label}: <span style='color:red;font-weight:bold'>{value:.2f}{suffix}</span>"
+        stock = yf.Ticker(ticker)
+        return stock.info.get("shortName", ticker)
+    except:
+        return ticker
+
+# ---------- RSI Calculation ----------
+def calculate_rsi(data: pd.DataFrame, window: int = 14) -> pd.Series:
+    delta = data["Close"].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+
+    avg_gain = gain.rolling(window=window, min_periods=1).mean()
+    avg_loss = loss.rolling(window=window, min_periods=1).mean()
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# ---------- Moving Averages ----------
+def calculate_ma(data: pd.DataFrame, window: int):
+    return data["Close"].rolling(window=window).mean()
+
+# ---------- Fundamentals ----------
+def get_fundamentals(ticker):
+    stock = yf.Ticker(ticker)
+    info = stock.info
+    return {
+        "Forward PE": info.get("forwardPE"),
+        "EPS Growth (next 5Y)": info.get("earningsQuarterlyGrowth"),
+        "Return on Capital": info.get("returnOnEquity"),
+    }
+
+# ---------- UI ----------
+st.title("📈 Stock RSI & Fundamentals Dashboard")
+
+user_input = st.text_input("Enter stock ticker or company name:", "AAPL").upper()
+
+# try to resolve input
+tickers = get_us_tickers()
+ticker = None
+if user_input in tickers:
+    ticker = user_input
+else:
+    # try to find by name
+    matches = [t for t in tickers if user_input.lower() in get_company_name(t).lower()]
+    if matches:
+        ticker = matches[0]
+
+if ticker:
+    company_name = get_company_name(ticker)
+    st.subheader(f"{ticker} - {company_name}")
+
+    # Download 1y of data
+    data = yf.download(ticker, period="1y")
+
+    # Indicators
+    data["RSI"] = calculate_rsi(data)
+    data["MA50"] = calculate_ma(data, 50)
+    data["MA200"] = calculate_ma(data, 200)
+
+    latest_price = data["Close"].iloc[-1]
+    rsi_latest = data["RSI"].iloc[-1]
+    ma50_latest = data["MA50"].iloc[-1]
+    ma200_latest = data["MA200"].iloc[-1]
+
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Chart", "💰 Fundamentals", "🔎 Analysis", "🧮 Screener"])
+
+    # ---- Chart ----
+    with tab1:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(data.index, data["Close"], label="Close Price", alpha=0.8)
+        ax.plot(data.index, data["MA50"], label="50-day MA")
+        ax.plot(data.index, data["MA200"], label="200-day MA")
+
+        ax.set_title(f"{ticker} Price & Moving Averages")
+        ax.legend()
+        st.pyplot(fig)
+
+    # ---- Fundamentals ----
+    with tab2:
+        fundamentals = get_fundamentals(ticker)
+        for metric, value in fundamentals.items():
+            if value is None:
+                st.write(f"{metric}: N/A")
+            else:
+                if metric == "Forward PE":
+                    color = "green" if value < 20 else "red"
+                elif metric == "EPS Growth (next 5Y)":
+                    color = "green" if value > 0 else "red"
+                elif metric == "Return on Capital":
+                    color = "green" if value > 0 else "red"
+                else:
+                    color = "white"
+                st.markdown(f"**{metric}:** <span style='color:{color}'>{value:.2f}</span>", unsafe_allow_html=True)
+
+    # ---- Analysis ----
+    with tab3:
+        st.metric("Current Price", f"${latest_price:.2f}")
+        st.metric("RSI (14)", f"{rsi_latest:.2f}")
+        st.metric("50-day MA", f"${ma50_latest:.2f}")
+        st.metric("200-day MA", f"${ma200_latest:.2f}")
+
+        if ma50_latest > ma200_latest:
+            st.success("Golden Cross: 50-day MA is above 200-day MA ✅")
         else:
-            return f"- {label}: {value:.2f}{suffix}"
-    except Exception:
-        return f"- {label}: {value}"
+            st.warning("No Golden Cross: 50-day MA is below 200-day MA ❌")
 
-def color_rsi(value):
-    """Specialized RSI coloring"""
-    if value is None:
-        return "- RSI: N/A"
-    if value > 70:
-        return f"- RSI: <span style='color:red;font-weight:bold'>{value:.2f} (Overbought)</span>"
-    elif value < 30:
-        return f"- RSI: <span style='color:green;font-weight:bold'>{value:.2f} (Oversold)</span>"
-    else:
-        return f"- RSI: {value:.2f} (Neutral)"
+    # ---- Screener ----
+    with tab4:
+        st.subheader("📋 Stock Screener (Most Active US Stocks)")
 
-# ---------- Streamlit App ----------
-st.title("📈 RockStock RSI App")
+        min_pe = st.number_input("Max Forward PE", value=20.0)
+        min_eps = st.number_input("Min EPS Growth", value=0.0)
+        min_roc = st.number_input("Min Return on Capital", value=0.0)
+        max_rsi = st.number_input("Max RSI", value=70.0)
 
-tickers_input = st.text_input("Enter stock tickers or company names (comma separated)", "Apple, MSFT, Tesla")
-tickers = [t.strip() for t in tickers_input.split(",") if t.strip()]
+        results = []
+        for t in tickers[:100]:  # limit to top 100 for speed
+            try:
+                f = get_fundamentals(t)
+                d = yf.download(t, period="6mo")
+                rsi_val = calculate_rsi(d).iloc[-1]
 
-tab1, tab2, tab3 = st.tabs(["📊 Screener", "🧠 Analysis", "🔍 Screener by Criteria"])
+                if (
+                    f["Forward PE"] is not None and f["Forward PE"] <= min_pe
+                    and f["EPS Growth (next 5Y)"] is not None and f["EPS Growth (next 5Y)"] >= min_eps
+                    and f["Return on Capital"] is not None and f["Return on Capital"] >= min_roc
+                    and rsi_val <= max_rsi
+                ):
+                    results.append([t, get_company_name(t), f["Forward PE"], f["EPS Growth (next 5Y)"], f["Return on Capital"], rsi_val])
+            except:
+                continue
 
-# ---- Tab 1: Screener ----
-with tab1:
-    st.subheader("Market Screener")
-    for t in tickers:
-        ticker, cname = resolve_ticker(t)
-        data = get_stock_data(ticker)
-        if data.empty:
-            st.warning(f"No data for {t}")
-            continue
-        metrics = get_metrics(ticker, data)
-        display_name = f"{ticker} ({metrics['Name']})" if metrics["Name"] else ticker
-        st.write(f"### {display_name}")
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Current Price", f"${metrics['Latest Price']:.2f}")
-        col2.metric("52W High", f"${metrics['52W High']:.2f}")
-        col3.metric("52W Low", f"${metrics['52W Low']:.2f}")
-
-        col4, col5, col6 = st.columns(3)
-        col4.metric("200d MA", f"${metrics['200d MA']:.2f}")
-        col5.metric("50d MA", f"${metrics['50d MA']:.2f}")
-        if metrics["RSI"] is not None:
-            col6.metric("RSI (14d)", f"{metrics['RSI']:.2f}")
+        if results:
+            df_results = pd.DataFrame(results, columns=["Ticker", "Company", "Forward PE", "EPS Growth", "ROC", "RSI"])
+            st.dataframe(df_results)
         else:
-            col6.metric("RSI (14d)", "N/A")
-
-        if metrics["Golden Cross"]:
-            st.success("✨ Golden Cross detected (50d > 200d)")
-        else:
-            st.info("No Golden Cross yet (50d <= 200d)")
-
-        st.markdown("**Fundamentals:**", unsafe_allow_html=True)
-        st.markdown(color_rsi(metrics["RSI"]), unsafe_allow_html=True)
-        st.markdown(color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40), unsafe_allow_html=True)
-        st.markdown(color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0), unsafe_allow_html=True)
-        st.markdown(color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05), unsafe_allow_html=True)
-
-        st.divider()
-
-# ---- Tab 2: Analysis ----
-with tab2:
-    st.subheader("Stock Analysis & Charts")
-    for t in tickers:
-        ticker, cname = resolve_ticker(t)
-        data = get_stock_data(ticker)
-        if data.empty:
-            st.warning(f"No data for {t}")
-            continue
-        metrics = get_metrics(ticker, data)
-        display_name = f"{ticker} ({metrics['Name']})" if metrics["Name"] else ticker
-        st.write(f"### {display_name}")
-
-        plot_chart(ticker, data)
-
-        st.markdown("**Analysis:**", unsafe_allow_html=True)
-        st.markdown(color_rsi(metrics["RSI"]), unsafe_allow_html=True)
-        st.markdown(f"- Golden Cross: {'✅ Yes' if metrics['Golden Cross'] else '❌ No'}", unsafe_allow_html=True)
-
-        st.markdown("**Fundamentals:**", unsafe_allow_html=True)
-        st.markdown(color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40), unsafe_allow_html=True)
-        st.markdown(color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0), unsafe_allow_html=True)
-        st.markdown(color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05), unsafe_allow_html=True)
-
-        st.divider()
-
-# ---- Tab 3: Screener by Criteria ----
-with tab3:
-    st.subheader("Custom Screener")
-
-    # Criteria sliders
-    min_pe = st.slider("Max Forward P/E", 0, 60, 25)
-    min_eps = st.slider("Min EPS Growth", -0.5, 0.5, 0.1)
-    min_roc = st.slider("Min Return on Capital", 0.0, 0.5, 0.1)
-    min_rsi, max_rsi = st.slider("RSI Range", 0, 100, (30, 70))
-    
-    st.write("🔄 Running Screener on S&P 500 (may take 1–2 minutes)...")
-
-    # Load S&P 500 tickers
-    sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
-    symbols = sp500["Symbol"].tolist()
-
-    results = []
-    for symbol in symbols[:100]:  # limit for demo, can expand
-        data = get_stock_data(symbol)
-        if data.empty:
-            continue
-        m = get_metrics(symbol, data)
-        if m["Forward PE"] and m["Forward PE"] < min_pe \
-           and m["EPS Growth"] and m["EPS Growth"] > min_eps \
-           and m["Return on Capital"] and m["Return on Capital"] > min_roc \
-           and m["RSI"] and min_rsi <= m["RSI"] <= max_rsi:
-            results.append([symbol, m["Name"], m["Forward PE"], m["EPS Growth"], m["Return on Capital"], m["RSI"]])
-
-    if results:
-        df = pd.DataFrame(results, columns=["Ticker", "Company", "Fwd P/E", "EPS Growth", "ROC", "RSI"])
-        st.dataframe(df)
-    else:
-        st.warning("No stocks matched your criteria.")
+            st.info("No stocks met the criteria.")
+else:
+    st.error("Ticker or company not found in most active stocks.")
 
