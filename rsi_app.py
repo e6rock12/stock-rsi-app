@@ -1,144 +1,117 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 
-# ----------------- RSI Helper -----------------
-def calculate_rsi(series: pd.Series, period: int = 14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0).rolling(period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(period).mean()
+# ---------- Helpers ----------
+def calculate_rsi(data, window=14):
+    if data.empty:
+        return None
+    delta = data["Close"].diff().dropna()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-# ----------------- Screener Builder -----------------
-def build_screener(tickers):
-    data = []
-    for t in tickers:
-        try:
-            stock = yf.Ticker(t)
-            info = stock.info
-            hist = stock.history(period="6mo")
+def get_stock_data(ticker, period="1y", interval="1d"):
+    return yf.download(ticker, period=period, interval=interval, progress=False)
 
-            if hist.empty:
-                continue
-
-            # RSI
-            rsi = calculate_rsi(hist["Close"])
-            latest_rsi = rsi.iloc[-1]
-
-            # Fundamentals
-            eps_growth = info.get("earningsQuarterlyGrowth", None)
-            forward_pe = info.get("forwardPE", None)
-            roe = info.get("returnOnEquity", None)
-
-            data.append({
-                "Ticker": t,
-                "RSI": round(latest_rsi, 2) if pd.notna(latest_rsi) else None,
-                "EPS Growth (YoY %)": round(eps_growth * 100, 2) if eps_growth else None,
-                "Forward P/E": round(forward_pe, 2) if forward_pe else None,
-                "ROE %": round(roe * 100, 2) if roe else None
-            })
-        except Exception as e:
-            st.warning(f"⚠️ Could not fetch data for {t}: {e}")
-
-    return pd.DataFrame(data)
-
-# ----------------- App Layout -----------------
-st.set_page_config(page_title="Stock RSI & Screener", layout="wide")
-st.title("📊 Stock RSI & Fundamental Screener")
-
-# --- Screener Section ---
-st.header("🔎 Multi-Ticker Screener")
-
-tickers_input = st.text_area(
-    "Enter tickers (comma-separated):", 
-    "AAPL, MSFT, CSCO, TSLA"
-)
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-
-if st.button("Run Screener"):
-    screener_df = build_screener(tickers)
-    if not screener_df.empty:
-        st.subheader("📋 Screener Results")
-        st.dataframe(screener_df, use_container_width=True)
-
-        # Highlight signals
-        st.markdown("### 🚦 Trade Signals")
-        oversold = screener_df[screener_df["RSI"] < 30]
-        overbought = screener_df[screener_df["RSI"] > 70]
-
-        if not oversold.empty:
-            st.success(f"✅ Potential oversold: {', '.join(oversold['Ticker'])}")
-        if not overbought.empty:
-            st.error(f"⚠️ Potential overbought: {', '.join(overbought['Ticker'])}")
-
-        # CSV Download
-        st.download_button(
-            "Download results as CSV",
-            screener_df.to_csv(index=False).encode("utf-8"),
-            "screener_results.csv",
-            "text/csv"
-        )
-
-st.markdown("---")
-
-# --- Detailed Single Ticker Analysis ---
-st.header("📈 Detailed Stock Analysis")
-
-ticker = st.text_input("Enter a ticker for detailed view:", "AAPL")
-
-if ticker:
+def get_metrics(ticker, data):
+    info = yf.Ticker(ticker).info
+    metrics = {}
     try:
-        stock = yf.Ticker(ticker)
-        data = stock.history(period="1y")
+        metrics["Latest Price"] = data["Close"].iloc[-1]
+        metrics["52W High"] = data["Close"].max()
+        metrics["52W Low"] = data["Close"].min()
+        metrics["200d MA"] = data["Close"].rolling(200).mean().iloc[-1]
+        metrics["50d MA"] = data["Close"].rolling(50).mean().iloc[-1]
+        metrics["Golden Cross"] = (
+            metrics["50d MA"] > metrics["200d MA"]
+        )
+        metrics["RSI"] = calculate_rsi(data).iloc[-1]
 
-        if not data.empty:
-            # Moving averages
-            data["50MA"] = data["Close"].rolling(window=50).mean()
-            data["200MA"] = data["Close"].rolling(window=200).mean()
-
-            # RSI
-            data["RSI"] = calculate_rsi(data["Close"])
-
-            latest_price = data["Close"].iloc[-1]
-            high_52w = data["Close"].max()
-            low_52w = data["Close"].min()
-            ma50 = data["50MA"].iloc[-1]
-            ma200 = data["200MA"].iloc[-1]
-            rsi_latest = data["RSI"].iloc[-1]
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Current Price", f"${latest_price:.2f}")
-            col2.metric("52W High", f"${high_52w:.2f}")
-            col3.metric("52W Low", f"${low_52w:.2f}")
-
-            col4, col5 = st.columns(2)
-            col4.metric("50-Day MA", f"${ma50:.2f}")
-            col5.metric("200-Day MA", f"${ma200:.2f}")
-
-            st.metric("RSI (14)", f"{rsi_latest:.2f}")
-
-            # Golden cross detection
-            if ma50 > ma200:
-                st.success("🌟 Golden Cross detected (50MA above 200MA)")
-            elif ma50 < ma200:
-                st.warning("❌ Death Cross (50MA below 200MA)")
-
-            # Plot chart
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(data.index, data["Close"], label="Close Price")
-            ax.plot(data.index, data["50MA"], label="50-Day MA", linestyle="--")
-            ax.plot(data.index, data["200MA"], label="200-Day MA", linestyle="--")
-            ax.set_title(f"{ticker} Price with Moving Averages")
-            ax.legend()
-            st.pyplot(fig)
-
-        else:
-            st.error("No historical data found for this ticker.")
+        # Fundamental metrics
+        metrics["Forward PE"] = info.get("forwardPE", None)
+        metrics["EPS Growth"] = info.get("earningsQuarterlyGrowth", None)
+        metrics["Return on Capital"] = info.get("returnOnEquity", None)
 
     except Exception as e:
-        st.error(f"Error retrieving {ticker}: {e}")
+        st.error(f"Error getting metrics for {ticker}: {e}")
+    return metrics
+
+def plot_chart(ticker, data):
+    plt.figure(figsize=(8, 4))
+    plt.plot(data.index, data["Close"], label="Close", color="blue")
+    plt.plot(data.index, data["Close"].rolling(50).mean(), label="50d MA", color="orange")
+    plt.plot(data.index, data["Close"].rolling(200).mean(), label="200d MA", color="red")
+    plt.title(f"{ticker} Price & Moving Averages")
+    plt.legend()
+    st.pyplot(plt)
+
+# ---------- Streamlit App ----------
+st.title("📈 RockStock RSI App")
+
+tickers_input = st.text_input("Enter stock tickers (comma separated)", "AAPL, MSFT, TSLA")
+tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+
+tab1, tab2 = st.tabs(["📊 Screener", "🧠 Analysis"])
+
+# ---- Tab 1: Screener ----
+with tab1:
+    st.subheader("Market Screener")
+    for t in tickers:
+        st.write(f"### {t}")
+        data = get_stock_data(t)
+        if data.empty:
+            st.warning(f"No data for {t}")
+            continue
+        metrics = get_metrics(t, data)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Current Price", f"${metrics['Latest Price']:.2f}")
+        col2.metric("52W High", f"${metrics['52W High']:.2f}")
+        col3.metric("52W Low", f"${metrics['52W Low']:.2f}")
+
+        col4, col5, col6 = st.columns(3)
+        col4.metric("200d MA", f"${metrics['200d MA']:.2f}")
+        col5.metric("50d MA", f"${metrics['50d MA']:.2f}")
+        col6.metric("RSI (14d)", f"{metrics['RSI']:.2f}")
+
+        # Golden Cross
+        if metrics["Golden Cross"]:
+            st.success("✨ Golden Cross detected (50d > 200d)")
+        else:
+            st.info("No Golden Cross yet (50d <= 200d)")
+
+        # Fundamentals
+        st.write("**Fundamentals:**")
+        st.write(f"- Forward PE: {metrics['Forward PE']}")
+        st.write(f"- EPS Growth: {metrics['EPS Growth']}")
+        st.write(f"- Return on Capital: {metrics['Return on Capital']}")
+
+        st.divider()
+
+# ---- Tab 2: Analysis ----
+with tab2:
+    st.subheader("Stock Analysis & Charts")
+    for t in tickers:
+        st.write(f"### {t}")
+        data = get_stock_data(t)
+        if data.empty:
+            st.warning(f"No data for {t}")
+            continue
+        metrics = get_metrics(t, data)
+        plot_chart(t, data)
+
+        # Narrative analysis
+        analysis_text = f"""
+        - **RSI**: {metrics['RSI']:.2f} → {"Overbought (>70)" if metrics['RSI'] > 70 else "Oversold (<30)" if metrics['RSI'] < 30 else "Neutral"}
+        - **Golden Cross**: {"Yes ✅" if metrics['Golden Cross'] else "No ❌"}
+        - **Forward P/E**: {metrics['Forward PE']}
+        - **EPS Growth**: {metrics['EPS Growth']}
+        - **Return on Capital**: {metrics['Return on Capital']}
+        """
+        st.markdown(analysis_text)
+        st.divider()
 
