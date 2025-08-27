@@ -21,17 +21,17 @@ def get_metrics(ticker, data):
     info = yf.Ticker(ticker).info
     metrics = {}
     try:
-        metrics["Latest Price"] = data["Close"].iloc[-1]
-        metrics["52W High"] = data["Close"].max()
-        metrics["52W Low"] = data["Close"].min()
-        metrics["200d MA"] = data["Close"].rolling(200).mean().iloc[-1]
-        metrics["50d MA"] = data["Close"].rolling(50).mean().iloc[-1]
-        metrics["Golden Cross"] = (
-            metrics["50d MA"] > metrics["200d MA"]
-        )
-        metrics["RSI"] = calculate_rsi(data).iloc[-1]
+        metrics["Latest Price"] = float(data["Close"].iloc[-1])
+        metrics["52W High"] = float(data["Close"].max())
+        metrics["52W Low"] = float(data["Close"].min())
+        metrics["200d MA"] = float(data["Close"].rolling(200).mean().iloc[-1])
+        metrics["50d MA"] = float(data["Close"].rolling(50).mean().iloc[-1])
+        metrics["Golden Cross"] = metrics["50d MA"] > metrics["200d MA"]
 
-        # Fundamental metrics
+        rsi_series = calculate_rsi(data)
+        metrics["RSI"] = float(rsi_series.iloc[-1]) if rsi_series is not None else None
+
+        # Fundamentals (cast to float if possible)
         metrics["Forward PE"] = info.get("forwardPE", None)
         metrics["EPS Growth"] = info.get("earningsQuarterlyGrowth", None)
         metrics["Return on Capital"] = info.get("returnOnEquity", None)
@@ -76,7 +76,10 @@ with tab1:
         col4, col5, col6 = st.columns(3)
         col4.metric("200d MA", f"${metrics['200d MA']:.2f}")
         col5.metric("50d MA", f"${metrics['50d MA']:.2f}")
-        col6.metric("RSI (14d)", f"{metrics['RSI']:.2f}")
+        if metrics["RSI"] is not None:
+            col6.metric("RSI (14d)", f"{metrics['RSI']:.2f}")
+        else:
+            col6.metric("RSI (14d)", "N/A")
 
         # Golden Cross
         if metrics["Golden Cross"]:
@@ -84,11 +87,11 @@ with tab1:
         else:
             st.info("No Golden Cross yet (50d <= 200d)")
 
-        # Fundamentals
+        # Fundamentals (safe display)
         st.write("**Fundamentals:**")
-        st.write(f"- Forward PE: {metrics['Forward PE']}")
-        st.write(f"- EPS Growth: {metrics['EPS Growth']}")
-        st.write(f"- Return on Capital: {metrics['Return on Capital']}")
+        st.write(f"- Forward PE: {metrics['Forward PE'] if metrics['Forward PE'] is not None else 'N/A'}")
+        st.write(f"- EPS Growth: {metrics['EPS Growth'] if metrics['EPS Growth'] is not None else 'N/A'}")
+        st.write(f"- Return on Capital: {metrics['Return on Capital'] if metrics['Return on Capital'] is not None else 'N/A'}")
 
         st.divider()
 
@@ -104,13 +107,13 @@ with tab2:
         metrics = get_metrics(t, data)
         plot_chart(t, data)
 
-        # Narrative analysis
+        # Narrative analysis (guarding against None)
         analysis_text = f"""
-        - **RSI**: {metrics['RSI']:.2f} → {"Overbought (>70)" if metrics['RSI'] > 70 else "Oversold (<30)" if metrics['RSI'] < 30 else "Neutral"}
+        - **RSI**: {metrics['RSI']:.2f} → {"Overbought (>70)" if metrics['RSI'] and metrics['RSI'] > 70 else "Oversold (<30)" if metrics['RSI'] and metrics['RSI'] < 30 else "Neutral"}
         - **Golden Cross**: {"Yes ✅" if metrics['Golden Cross'] else "No ❌"}
-        - **Forward P/E**: {metrics['Forward PE']}
-        - **EPS Growth**: {metrics['EPS Growth']}
-        - **Return on Capital**: {metrics['Return on Capital']}
+        - **Forward P/E**: {metrics['Forward PE'] if metrics['Forward PE'] is not None else 'N/A'}
+        - **EPS Growth**: {metrics['EPS Growth'] if metrics['EPS Growth'] is not None else 'N/A'}
+        - **Return on Capital**: {metrics['Return on Capital'] if metrics['Return on Capital'] is not None else 'N/A'}
         """
         st.markdown(analysis_text)
         st.divider()
