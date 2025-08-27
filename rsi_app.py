@@ -31,7 +31,7 @@ def get_metrics(ticker, data):
         rsi_series = calculate_rsi(data)
         metrics["RSI"] = float(rsi_series.iloc[-1]) if rsi_series is not None else None
 
-        # Fundamentals (cast to float if possible)
+        # Fundamentals
         metrics["Forward PE"] = info.get("forwardPE", None)
         metrics["EPS Growth"] = info.get("earningsQuarterlyGrowth", None)
         metrics["Return on Capital"] = info.get("returnOnEquity", None)
@@ -48,6 +48,20 @@ def plot_chart(ticker, data):
     plt.title(f"{ticker} Price & Moving Averages")
     plt.legend()
     st.pyplot(plt)
+
+def color_metric(label, value, good_condition, bad_condition, suffix=""):
+    """Helper to return color-coded fundamentals"""
+    if value is None:
+        return f"- {label}: N/A"
+    try:
+        if good_condition(value):
+            return f"- {label}: <span style='color:green;font-weight:bold'>{value:.2f}{suffix}</span>"
+        elif bad_condition(value):
+            return f"- {label}: <span style='color:red;font-weight:bold'>{value:.2f}{suffix}</span>"
+        else:
+            return f"- {label}: {value:.2f}{suffix}"
+    except Exception:
+        return f"- {label}: {value}"
 
 # ---------- Streamlit App ----------
 st.title("📈 RockStock RSI App")
@@ -87,11 +101,20 @@ with tab1:
         else:
             st.info("No Golden Cross yet (50d <= 200d)")
 
-        # Fundamentals (safe display)
-        st.write("**Fundamentals:**")
-        st.write(f"- Forward PE: {metrics['Forward PE'] if metrics['Forward PE'] is not None else 'N/A'}")
-        st.write(f"- EPS Growth: {metrics['EPS Growth'] if metrics['EPS Growth'] is not None else 'N/A'}")
-        st.write(f"- Return on Capital: {metrics['Return on Capital'] if metrics['Return on Capital'] is not None else 'N/A'}")
+        # Fundamentals
+        st.markdown("**Fundamentals:**", unsafe_allow_html=True)
+        st.markdown(
+            color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05, suffix=""),
+            unsafe_allow_html=True,
+        )
 
         st.divider()
 
@@ -107,14 +130,32 @@ with tab2:
         metrics = get_metrics(t, data)
         plot_chart(t, data)
 
-        # Narrative analysis (guarding against None)
+        # Narrative analysis
+        rsi_text = (
+            "Overbought (>70)" if metrics["RSI"] and metrics["RSI"] > 70
+            else "Oversold (<30)" if metrics["RSI"] and metrics["RSI"] < 30
+            else "Neutral"
+        )
+
         analysis_text = f"""
-        - **RSI**: {metrics['RSI']:.2f} → {"Overbought (>70)" if metrics['RSI'] and metrics['RSI'] > 70 else "Oversold (<30)" if metrics['RSI'] and metrics['RSI'] < 30 else "Neutral"}
-        - **Golden Cross**: {"Yes ✅" if metrics['Golden Cross'] else "No ❌"}
-        - **Forward P/E**: {metrics['Forward PE'] if metrics['Forward PE'] is not None else 'N/A'}
-        - **EPS Growth**: {metrics['EPS Growth'] if metrics['EPS Growth'] is not None else 'N/A'}
-        - **Return on Capital**: {metrics['Return on Capital'] if metrics['Return on Capital'] is not None else 'N/A'}
+        - **RSI**: {metrics['RSI']:.2f} → {rsi_text}  
+        - **Golden Cross**: {"Yes ✅" if metrics['Golden Cross'] else "No ❌"}  
         """
         st.markdown(analysis_text)
+
+        st.markdown("**Fundamentals:**", unsafe_allow_html=True)
+        st.markdown(
+            color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05),
+            unsafe_allow_html=True,
+        )
+
         st.divider()
 
