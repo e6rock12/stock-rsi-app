@@ -14,6 +14,28 @@ def calculate_rsi(data, window=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
+def resolve_ticker(user_input):
+    """Try to resolve user input (ticker or company name)"""
+    try:
+        ticker = yf.Ticker(user_input)
+        info = ticker.info
+        if "shortName" in info:  # valid ticker
+            return user_input.upper(), info.get("shortName", "")
+    except:
+        pass
+
+    # Fallback: try search suggestions
+    try:
+        df = yf.search(user_input)
+        if not df.empty:
+            symbol = df.iloc[0]["symbol"]
+            name = df.iloc[0]["shortname"]
+            return symbol.upper(), name
+    except:
+        pass
+
+    return user_input.upper(), ""  # return raw if not resolvable
+
 def get_stock_data(ticker, period="1y", interval="1d"):
     return yf.download(ticker, period=period, interval=interval, progress=False)
 
@@ -21,6 +43,7 @@ def get_metrics(ticker, data):
     info = yf.Ticker(ticker).info
     metrics = {}
     try:
+        metrics["Name"] = info.get("shortName", "")
         metrics["Latest Price"] = float(data["Close"].iloc[-1])
         metrics["52W High"] = float(data["Close"].max())
         metrics["52W Low"] = float(data["Close"].min())
@@ -50,7 +73,7 @@ def plot_chart(ticker, data):
     st.pyplot(plt)
 
 def color_metric(label, value, good_condition, bad_condition, suffix=""):
-    """Helper to return color-coded fundamentals"""
+    """Helper to return color-coded metrics"""
     if value is None:
         return f"- {label}: N/A"
     try:
@@ -63,24 +86,37 @@ def color_metric(label, value, good_condition, bad_condition, suffix=""):
     except Exception:
         return f"- {label}: {value}"
 
+def color_rsi(value):
+    """Specialized RSI coloring"""
+    if value is None:
+        return "- RSI: N/A"
+    if value > 70:
+        return f"- RSI: <span style='color:red;font-weight:bold'>{value:.2f} (Overbought)</span>"
+    elif value < 30:
+        return f"- RSI: <span style='color:green;font-weight:bold'>{value:.2f} (Oversold)</span>"
+    else:
+        return f"- RSI: {value:.2f} (Neutral)"
+
 # ---------- Streamlit App ----------
 st.title("📈 RockStock RSI App")
 
-tickers_input = st.text_input("Enter stock tickers (comma separated)", "AAPL, MSFT, TSLA")
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+tickers_input = st.text_input("Enter stock tickers or company names (comma separated)", "Apple, MSFT, Tesla")
+tickers = [t.strip() for t in tickers_input.split(",") if t.strip()]
 
-tab1, tab2 = st.tabs(["📊 Screener", "🧠 Analysis"])
+tab1, tab2, tab3 = st.tabs(["📊 Screener", "🧠 Analysis", "🔍 Screener by Criteria"])
 
 # ---- Tab 1: Screener ----
 with tab1:
     st.subheader("Market Screener")
     for t in tickers:
-        st.write(f"### {t}")
-        data = get_stock_data(t)
+        ticker, cname = resolve_ticker(t)
+        data = get_stock_data(ticker)
         if data.empty:
             st.warning(f"No data for {t}")
             continue
-        metrics = get_metrics(t, data)
+        metrics = get_metrics(ticker, data)
+        display_name = f"{ticker} ({metrics['Name']})" if metrics["Name"] else ticker
+        st.write(f"### {display_name}")
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Current Price", f"${metrics['Latest Price']:.2f}")
@@ -95,26 +131,16 @@ with tab1:
         else:
             col6.metric("RSI (14d)", "N/A")
 
-        # Golden Cross
         if metrics["Golden Cross"]:
             st.success("✨ Golden Cross detected (50d > 200d)")
         else:
             st.info("No Golden Cross yet (50d <= 200d)")
 
-        # Fundamentals
         st.markdown("**Fundamentals:**", unsafe_allow_html=True)
-        st.markdown(
-            color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05, suffix=""),
-            unsafe_allow_html=True,
-        )
+        st.markdown(color_rsi(metrics["RSI"]), unsafe_allow_html=True)
+        st.markdown(color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40), unsafe_allow_html=True)
+        st.markdown(color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0), unsafe_allow_html=True)
+        st.markdown(color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05), unsafe_allow_html=True)
 
         st.divider()
 
@@ -122,40 +148,59 @@ with tab1:
 with tab2:
     st.subheader("Stock Analysis & Charts")
     for t in tickers:
-        st.write(f"### {t}")
-        data = get_stock_data(t)
+        ticker, cname = resolve_ticker(t)
+        data = get_stock_data(ticker)
         if data.empty:
             st.warning(f"No data for {t}")
             continue
-        metrics = get_metrics(t, data)
-        plot_chart(t, data)
+        metrics = get_metrics(ticker, data)
+        display_name = f"{ticker} ({metrics['Name']})" if metrics["Name"] else ticker
+        st.write(f"### {display_name}")
 
-        # Narrative analysis
-        rsi_text = (
-            "Overbought (>70)" if metrics["RSI"] and metrics["RSI"] > 70
-            else "Oversold (<30)" if metrics["RSI"] and metrics["RSI"] < 30
-            else "Neutral"
-        )
+        plot_chart(ticker, data)
 
-        analysis_text = f"""
-        - **RSI**: {metrics['RSI']:.2f} → {rsi_text}  
-        - **Golden Cross**: {"Yes ✅" if metrics['Golden Cross'] else "No ❌"}  
-        """
-        st.markdown(analysis_text)
+        st.markdown("**Analysis:**", unsafe_allow_html=True)
+        st.markdown(color_rsi(metrics["RSI"]), unsafe_allow_html=True)
+        st.markdown(f"- Golden Cross: {'✅ Yes' if metrics['Golden Cross'] else '❌ No'}", unsafe_allow_html=True)
 
         st.markdown("**Fundamentals:**", unsafe_allow_html=True)
-        st.markdown(
-            color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05),
-            unsafe_allow_html=True,
-        )
+        st.markdown(color_metric("Forward PE", metrics["Forward PE"], lambda v: v < 20, lambda v: v > 40), unsafe_allow_html=True)
+        st.markdown(color_metric("EPS Growth", metrics["EPS Growth"], lambda v: v > 0.1, lambda v: v < 0), unsafe_allow_html=True)
+        st.markdown(color_metric("Return on Capital", metrics["Return on Capital"], lambda v: v > 0.15, lambda v: v < 0.05), unsafe_allow_html=True)
 
         st.divider()
+
+# ---- Tab 3: Screener by Criteria ----
+with tab3:
+    st.subheader("Custom Screener")
+
+    # Criteria sliders
+    min_pe = st.slider("Max Forward P/E", 0, 60, 25)
+    min_eps = st.slider("Min EPS Growth", -0.5, 0.5, 0.1)
+    min_roc = st.slider("Min Return on Capital", 0.0, 0.5, 0.1)
+    min_rsi, max_rsi = st.slider("RSI Range", 0, 100, (30, 70))
+    
+    st.write("🔄 Running Screener on S&P 500 (may take 1–2 minutes)...")
+
+    # Load S&P 500 tickers
+    sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+    symbols = sp500["Symbol"].tolist()
+
+    results = []
+    for symbol in symbols[:100]:  # limit for demo, can expand
+        data = get_stock_data(symbol)
+        if data.empty:
+            continue
+        m = get_metrics(symbol, data)
+        if m["Forward PE"] and m["Forward PE"] < min_pe \
+           and m["EPS Growth"] and m["EPS Growth"] > min_eps \
+           and m["Return on Capital"] and m["Return on Capital"] > min_roc \
+           and m["RSI"] and min_rsi <= m["RSI"] <= max_rsi:
+            results.append([symbol, m["Name"], m["Forward PE"], m["EPS Growth"], m["Return on Capital"], m["RSI"]])
+
+    if results:
+        df = pd.DataFrame(results, columns=["Ticker", "Company", "Fwd P/E", "EPS Growth", "ROC", "RSI"])
+        st.dataframe(df)
+    else:
+        st.warning("No stocks matched your criteria.")
 
