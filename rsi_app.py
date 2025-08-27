@@ -66,5 +66,6 @@ st.set_page_config(page_title="RockStock RSI App", layout="wide")
 
 st.title("📈 RockStock RSI App")
 
-tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Sto]()
+tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Stock Screener"])
+
 
