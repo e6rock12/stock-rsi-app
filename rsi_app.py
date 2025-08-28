@@ -1,168 +1,137 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
 
-st.set_page_config(page_title="RSI & Stock Analyzer", layout="wide")
+# -----------------
+# Utility functions
+# -----------------
 
-# ---------------- Helper Functions ---------------- #
-
-def resolve_ticker(user_input: str):
-    """Resolve a company name or ticker symbol to a valid ticker."""
-    user_input = user_input.strip().upper()
-
-    # If it already looks like a ticker (short and letters only), return directly
-    if len(user_input) <= 5 and user_input.isalpha():
-        return user_input
-
-    # Otherwise, try searching Yahoo Finance
+def get_stock_info(ticker):
     try:
-        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={user_input}"
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        results = r.json().get("quotes", [])
-        if results:
-            return results[0]["symbol"]
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        name = info.get("shortName", "Unknown Company")
+        return name, stock
     except Exception as e:
-        st.error(f"Lookup failed for {user_input}: {e}")
-
-    return None
+        return None, None
 
 
-def compute_rsi(data, window=14):
-    """Compute RSI from closing price data."""
+def calculate_rsi(data, window=14):
     delta = data["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 
 def golden_cross(ma50, ma200):
-    """Detect Golden Cross or Death Cross signals."""
-    try:
-        if ma50.iloc[-1] > ma200.iloc[-1] and ma50.iloc[-2] <= ma200.iloc[-2]:
-            return "🟢 Golden Cross (Bullish)"
-        elif ma50.iloc[-1] < ma200.iloc[-1] and ma50.iloc[-2] >= ma200.iloc[-2]:
-            return "🔴 Death Cross (Bearish)"
-        else:
-            return "⚪ No Cross"
-    except Exception:
-        return "⚪ Not enough data"
+    if len(ma50) == 0 or len(ma200) == 0:
+        return "Not enough data"
+    if ma50.iloc[-1] > ma200.iloc[-1]:
+        return "Golden Cross (Bullish)"
+    elif ma50.iloc[-1] < ma200.iloc[-1]:
+        return "Death Cross (Bearish)"
+    else:
+        return "Neutral"
 
 
-def fetch_stock_data(ticker):
-    """Fetch stock price history and fundamentals."""
-    try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1y")
-        return stock, hist
-    except Exception as e:
-        st.error(f"Error fetching {ticker}: {e}")
-        return None, None
+# -----------------
+# Streamlit UI
+# -----------------
 
+st.set_page_config(page_title="Stock RSI App", layout="wide")
+st.title("📈 Stock RSI & Fundamentals App")
 
-def color_value(val, good, bad):
-    """Color fundamentals: green if good, red if bad."""
-    try:
-        val = float(val)
-        if val >= good:
-            return f"🟢 {val}"
-        elif val <= bad:
-            return f"🔴 {val}"
-        else:
-            return f"⚪ {val}"
-    except:
-        return f"⚪ {val}"
-
-
-# ---------------- Streamlit UI ---------------- #
-
-st.title("📈 RSI & Stock Analyzer with Fundamentals")
-
+# Tabs
 tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Screener"])
 
-# --------------- Stock Analysis Tab --------------- #
+# -----------------
+# Stock Analysis Tab
+# -----------------
 with tab1:
-    st.header("Stock Analysis (RSI & Moving Averages)")
-    user_input = st.text_input("Enter stock ticker(s) or company name(s) (comma separated):", "AAPL, MSFT")
+    tickers_input = st.text_input("Enter ticker symbols (comma separated)", "AAPL, MSFT")
+    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-    if user_input:
-        tickers = [t.strip() for t in user_input.split(",") if t.strip()]
-
-        for entry in tickers:
-            ticker = resolve_ticker(entry)
-            if not ticker:
-                st.error(f"Could not resolve '{entry}' to a valid ticker.")
-                continue
-
-            stock, hist = fetch_stock_data(ticker)
-            if hist is None or hist.empty:
-                st.error(f"No data found for {ticker}")
-                continue
-
-            hist["RSI"] = compute_rsi(hist)
-            hist["MA50"] = hist["Close"].rolling(window=50).mean()
-            hist["MA200"] = hist["Close"].rolling(window=200).mean()
-
-            st.subheader(f"📊 {ticker}")
-            st.line_chart(hist[["Close", "MA50", "MA200"]])
-            st.line_chart(hist["RSI"])
-
-            signal = golden_cross(hist["MA50"], hist["MA200"])
-            st.write(f"**Crossover Signal:** {signal}")
-
-
-# --------------- Fundamentals Tab --------------- #
-with tab2:
-    st.header("Company Fundamentals")
-    fundamentals_input = st.text_input("Enter stock ticker(s) or company name(s):", "AAPL")
-
-    if fundamentals_input:
-        tickers = [t.strip() for t in fundamentals_input.split(",") if t.strip()]
-
-        for entry in tickers:
-            ticker = resolve_ticker(entry)
-            if not ticker:
-                st.error(f"Could not resolve '{entry}' to a valid ticker.")
-                continue
-
-            stock, _ = fetch_stock_data(ticker)
+    if st.button("Run Analysis"):
+        for ticker in tickers:
+            name, stock = get_stock_info(ticker)
             if not stock:
+                st.error(f"Could not retrieve {ticker}")
                 continue
 
+            st.subheader(f"{name} ({ticker})")
+
+            data = stock.history(period="1y")
+            if data.empty:
+                st.warning(f"No data for {ticker}")
+                continue
+
+            # Calculate indicators
+            data["RSI"] = calculate_rsi(data)
+            ma50 = data["Close"].rolling(window=50).mean()
+            ma200 = data["Close"].rolling(window=200).mean()
+            cross_signal = golden_cross(ma50, ma200)
+
+            latest_rsi = data["RSI"].iloc[-1]
+            st.metric("RSI (14d)", f"{latest_rsi:.2f}")
+            st.write(f"**MA Signal**: {cross_signal}")
+
+            st.line_chart(data[["Close", "RSI"]])
+
+# -----------------
+# Fundamentals Tab
+# -----------------
+with tab2:
+    tickers_input_fund = st.text_input("Enter ticker symbols (comma separated)", "AAPL, MSFT", key="fund_input")
+    tickers_fund = [t.strip().upper() for t in tickers_input_fund.split(",") if t.strip()]
+
+    if st.button("Get Fundamentals"):
+        fundamentals_data = []
+        for ticker in tickers_fund:
+            name, stock = get_stock_info(ticker)
+            if not stock:
+                st.error(f"Could not retrieve {ticker}")
+                continue
             info = stock.info
-            st.subheader(f"🏢 {ticker}")
+            fundamentals_data.append({
+                "Ticker": ticker,
+                "Name": name,
+                "Forward P/E": info.get("forwardPE"),
+                "EPS Growth": info.get("earningsQuarterlyGrowth"),
+                "Return on Capital": info.get("returnOnEquity"),
+                "52w High": info.get("fiftyTwoWeekHigh"),
+                "52w Low": info.get("fiftyTwoWeekLow")
+            })
+        df = pd.DataFrame(fundamentals_data)
+        st.dataframe(df)
 
-            fundamentals = {
-                "Market Cap": info.get("marketCap", "N/A"),
-                "PE Ratio": info.get("trailingPE", "N/A"),
-                "Forward PE": info.get("forwardPE", "N/A"),
-                "Dividend Yield": info.get("dividendYield", "N/A"),
-                "Profit Margin": info.get("profitMargins", "N/A"),
-                "ROE": info.get("returnOnEquity", "N/A"),
-            }
-
-            colored = {
-                k: color_value(v, good=15, bad=5) if isinstance(v, (int, float)) else v
-                for k, v in fundamentals.items()
-            }
-
-            st.table(pd.DataFrame(colored, index=[0]).T)
-
-
-# --------------- Screener Tab --------------- #
+# -----------------
+# Screener Tab
+# -----------------
 with tab3:
-    st.header("Top Movers Screener (Most Active US Stocks)")
-    try:
-        url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=25"
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        results = r.json()["finance"]["result"][0]["quotes"]
+    st.write("### Most Active Stocks")
 
-        screener_df = pd.DataFrame(results)[
-            ["symbol", "shortName", "regularMarketPrice", "regularMarketChangePercent", "regularMarketVolume"]
-        ]
-        st.dataframe(screener_df)
+    try:
+        active = yf.get_day_most_active()
+        if not active.empty:
+            active = active.reset_index()
+
+            def show_details(ticker):
+                st.session_state["selected_ticker"] = ticker
+
+            for i, row in active.head(10).iterrows():
+                ticker = row["Symbol"]
+                name = row["Name"]
+                st.write(f"**{ticker}** - {name}")
+                if st.button(f"Analyze {ticker}", key=f"btn_{ticker}"):
+                    st.session_state["selected_ticker"] = ticker
 
     except Exception as e:
         st.error(f"Error fetching most active stocks: {e}")
+
+# If ticker clicked from Screener, load it into Analysis/Fundamentals
+if "selected_ticker" in st.session_state:
+    sel = st.session_state["selected_ticker"]
+    st.success(f"Loading {sel} into Analysis and Fundamentals tabs...")
 
