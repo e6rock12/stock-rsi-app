@@ -1,171 +1,158 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
-import matplotlib.pyplot as plt
 
 # ---------- Helpers ----------
-def lookup_ticker(query: str) -> str:
-    """
-    Use Yahoo Finance search API to resolve company name to ticker symbol.
-    If lookup fails, fallback to raw uppercase input.
-    """
-    url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
+def get_stock_data(ticker: str, period="1y"):
     try:
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            if "quotes" in data and len(data["quotes"]) > 0:
-                return data["quotes"][0]["symbol"]  # take first match
+        stock = yf.Ticker(ticker)
+        df = stock.history(period=period)
+        if df.empty:
+            return None, None
+        info = stock.info
+        return df, info
     except Exception as e:
-        st.warning(f"Lookup error: {e}")
-    return query.upper().strip()  # fallback
+        st.error(f"Error retrieving {ticker}: {e}")
+        return None, None
 
-def calculate_rsi(data: pd.Series, window: int = 14) -> pd.Series:
-    delta = data.diff()
+def calculate_rsi(data: pd.DataFrame, window=14):
+    delta = data["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-def golden_cross(ma50: pd.Series, ma200: pd.Series) -> str:
-    """Check for Golden Cross or Death Cross"""
-    if len(ma50) > 0 and len(ma200) > 0:
-        if ma50.iloc[-1] > ma200.iloc[-1] and ma50.iloc[-2] <= ma200.iloc[-2]:
-            return "Golden Cross ⚡ (Bullish)"
-        elif ma50.iloc[-1] < ma200.iloc[-1] and ma50.iloc[-2] >= ma200.iloc[-2]:
-            return "Death Cross 💀 (Bearish)"
-    return "No crossover"
-
-def safe_get(info_dict, key, default="N/A"):
+def golden_cross(ma50, ma200):
+    if ma50.empty or ma200.empty:
+        return None
     try:
-        val = info_dict.get(key, default)
-        if isinstance(val, (int, float)):
-            return round(val, 2)
-        return val
-    except Exception:
-        return default
-
-def colorize(val, good_high=True):
-    """Color code fundamentals (green good, red bad)."""
-    if isinstance(val, (int, float)):
-        if good_high:
-            return f"✅ {val}"
+        if ma50.iloc[-1] > ma200.iloc[-1] and ma50.iloc[-2] <= ma200.iloc[-2]:
+            return "Golden Cross"
+        elif ma50.iloc[-1] < ma200.iloc[-1] and ma50.iloc[-2] >= ma200.iloc[-2]:
+            return "Death Cross"
         else:
-            return f"⚠️ {val}"
-    return val
+            return None
+    except Exception:
+        return None
 
+# ---------- Streamlit UI ----------
+st.set_page_config(page_title="Stock RSI & Fundamentals", layout="wide")
 
-# ---------- Streamlit App ----------
-st.set_page_config(page_title="Stock RSI & Fundamentals App", layout="wide")
-st.title("📈 Stock RSI & Fundamentals App")
+st.title("📈 Stock RSI, Moving Averages & Fundamentals")
 
 # Tabs
-tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Screener"])
+tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Stock Screener"])
 
-# -------- Tab 1: Stock Analysis --------
 with tab1:
-    user_input = st.text_input("Enter a stock ticker *or* company name:", "AAPL")
-    ticker = lookup_ticker(user_input)
-    st.write(f"Looking up: **{ticker}**")
+    st.header("🔍 Stock Analysis")
 
-    try:
-        stock = yf.Ticker(ticker)
-        data = stock.history(period="1y")
+    user_input = st.text_input("Enter a stock ticker or company name:", "AAPL")
 
-        if data.empty:
-            st.error(f"No data found for {ticker}")
-        else:
-            st.subheader(f"{ticker} Price Chart with RSI")
+    if user_input:
+        try:
+            ticker = yf.Ticker(user_input).ticker
+        except:
+            ticker = user_input.upper()
+        df, info = get_stock_data(ticker)
 
-            # RSI and Moving Averages
-            data["RSI"] = calculate_rsi(data["Close"])
-            data["MA50"] = data["Close"].rolling(window=50).mean()
-            data["MA200"] = data["Close"].rolling(window=200).mean()
+        if df is not None and info is not None:
+            st.subheader(f"{info.get('longName', ticker)} ({ticker})")
 
-            # Plot
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-            ax1.plot(data.index, data["Close"], label="Close Price", color="blue")
-            ax1.plot(data.index, data["MA50"], label="50-day MA", color="orange")
-            ax1.plot(data.index, data["MA200"], label="200-day MA", color="red")
-            ax1.set_ylabel("Price")
-            ax1.legend()
+            # Moving averages
+            ma50 = df["Close"].rolling(window=50).mean()
+            ma200 = df["Close"].rolling(window=200).mean()
+            cross_signal = golden_cross(ma50, ma200)
 
-            ax2.plot(data.index, data["RSI"], label="RSI", color="purple")
-            ax2.axhline(70, color="red", linestyle="--")
-            ax2.axhline(30, color="green", linestyle="--")
-            ax2.set_ylabel("RSI")
-            ax2.legend()
+            # RSI
+            rsi = calculate_rsi(df)
 
-            st.pyplot(fig)
+            # Chart
+            chart_data = pd.DataFrame({
+                "Close": df["Close"],
+                "50 MA": ma50,
+                "200 MA": ma200,
+                "RSI": rsi
+            })
+            st.line_chart(chart_data[["Close", "50 MA", "200 MA"]])
 
-            # Golden Cross Check
-            signal = golden_cross(data["MA50"], data["MA200"])
-            st.info(f"📊 Moving Average Signal: **{signal}**")
+            if cross_signal:
+                st.success(f"Signal: **{cross_signal}**")
+            else:
+                st.info("No Golden/Death Cross detected.")
 
-    except Exception as e:
-        st.error(f"Error retrieving {ticker}: {e}")
+            st.metric("Latest RSI", f"{rsi.iloc[-1]:.2f}")
 
-# -------- Tab 2: Fundamentals --------
 with tab2:
-    ticker = lookup_ticker(user_input)
-    stock = yf.Ticker(ticker)
-    info = stock.info
+    st.header("📊 Fundamentals")
 
-    st.subheader(f"Fundamentals for {ticker} - {safe_get(info, 'longName')}")
-    fundamentals = {
-        "Forward P/E": colorize(safe_get(info, "forwardPE"), good_high=False),
-        "EPS Growth (5y)": colorize(safe_get(info, "earningsQuarterlyGrowth")),
-        "Return on Capital": colorize(safe_get(info, "returnOnEquity")),
-        "52 Week High": safe_get(info, "fiftyTwoWeekHigh"),
-        "52 Week Low": safe_get(info, "fiftyTwoWeekLow"),
-        "Market Cap": safe_get(info, "marketCap"),
-    }
+    if user_input:
+        try:
+            ticker = yf.Ticker(user_input).ticker
+        except:
+            ticker = user_input.upper()
+        df, info = get_stock_data(ticker)
 
-    st.table(pd.DataFrame(fundamentals.items(), columns=["Metric", "Value"]))
+        if info:
+            forward_pe = info.get("forwardPE", "N/A")
+            eps_growth = info.get("earningsQuarterlyGrowth", "N/A")
+            roe = info.get("returnOnEquity", "N/A")
 
-# -------- Tab 3: Screener --------
+            fundamentals = {
+                "Forward P/E": forward_pe,
+                "EPS Growth (YoY)": eps_growth,
+                "Return on Equity": roe
+            }
+            st.write(pd.DataFrame.from_dict(fundamentals, orient="index", columns=["Value"]))
+
 with tab3:
-    st.subheader("🧮 Stock Screener (Most Active US Stocks)")
+    st.header("🧮 Stock Screener")
 
-    try:
-        # Get Yahoo "Most Active" stocks
-        url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives"
-        resp = requests.get(url, timeout=5)
-        data = resp.json()
+    st.write("Filter **Most Active US Stocks** based on your criteria.")
 
-        quotes = data.get("finance", {}).get("result", [])[0].get("quotes", [])
-        tickers = [q["symbol"] for q in quotes[:25]]  # top 25 most active
+    # Screener inputs
+    pe_max = st.number_input("Max Forward P/E", min_value=0.0, value=25.0)
+    eps_min = st.number_input("Min EPS Growth (YoY)", min_value=-1.0, value=0.0)
+    roe_min = st.number_input("Min Return on Equity", min_value=-1.0, value=0.1)
+    rsi_min = st.slider("RSI Min", 0, 100, 30)
+    rsi_max = st.slider("RSI Max", 0, 100, 70)
 
-        st.write("Analyzing top 25 most active stocks...")
+    if st.button("Run Screener 🚀"):
+        st.info("Fetching most active US stocks...")
+        try:
+            tickers = yf.Tickers("AAPL MSFT AMZN TSLA NVDA META NFLX GOOGL INTC AMD JPM BAC XOM CVX WMT T")
+            results = []
 
-        results = []
-        for t in tickers:
-            try:
-                s = yf.Ticker(t)
-                info = s.info
-                hist = s.history(period="6mo")
-                if hist.empty:
+            for t in tickers.tickers:
+                df, info = get_stock_data(t, period="6mo")
+                if df is None or info is None:
                     continue
 
-                rsi = calculate_rsi(hist["Close"]).iloc[-1]
+                rsi = calculate_rsi(df)
+                latest_rsi = rsi.iloc[-1] if not rsi.empty else None
+                fpe = info.get("forwardPE")
+                eps_growth = info.get("earningsQuarterlyGrowth")
+                roe = info.get("returnOnEquity")
 
-                results.append({
-                    "Ticker": t,
-                    "Name": safe_get(info, "shortName"),
-                    "RSI": round(rsi, 2) if not pd.isna(rsi) else "N/A",
-                    "Forward P/E": safe_get(info, "forwardPE"),
-                    "EPS Growth": safe_get(info, "earningsQuarterlyGrowth"),
-                    "Return on Capital": safe_get(info, "returnOnEquity"),
-                })
-            except Exception:
-                continue
+                if not all([fpe, eps_growth, roe, latest_rsi]):
+                    continue
 
-        if results:
-            st.dataframe(pd.DataFrame(results))
-        else:
-            st.warning("No screener results available.")
+                if fpe <= pe_max and eps_growth >= eps_min and roe >= roe_min and rsi_min <= latest_rsi <= rsi_max:
+                    results.append({
+                        "Ticker": t,
+                        "Company": info.get("longName", t),
+                        "Forward P/E": fpe,
+                        "EPS Growth": eps_growth,
+                        "ROE": roe,
+                        "RSI": latest_rsi
+                    })
 
-    except Exception as e:
-        st.error(f"Error fetching US tickers: {e}")
+            if results:
+                df_results = pd.DataFrame(results)
+                st.success(f"✅ Found {len(df_results)} matching stocks.")
+                st.dataframe(df_results)
+            else:
+                st.warning("No stocks matched your filters.")
+        except Exception as e:
+            st.error(f"Error fetching screener data: {e}")
 
