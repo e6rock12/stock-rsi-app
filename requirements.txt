@@ -1,6 +1,6 @@
-streamlit>=1.32
+streamlit
 yfinance
 pandas
-matplotlib
-yahooquery
+lxml
+requests
 
