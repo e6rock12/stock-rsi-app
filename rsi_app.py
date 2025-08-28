@@ -1,137 +1,148 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
 
-# -----------------
-# Utility functions
-# -----------------
-
-def get_stock_info(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        name = info.get("shortName", "Unknown Company")
-        return name, stock
-    except Exception as e:
-        return None, None
-
+# ==========================
+# Utility Functions
+# ==========================
 
 def calculate_rsi(data, window=14):
-    delta = data["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
+    delta = data['Close'].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
+    avg_gain = gain.rolling(window=window).mean()
+    avg_loss = loss.rolling(window=window).mean()
+
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
 
 def golden_cross(ma50, ma200):
-    if len(ma50) == 0 or len(ma200) == 0:
-        return "Not enough data"
-    if ma50.iloc[-1] > ma200.iloc[-1]:
-        return "Golden Cross (Bullish)"
-    elif ma50.iloc[-1] < ma200.iloc[-1]:
-        return "Death Cross (Bearish)"
-    else:
-        return "Neutral"
+    try:
+        if ma50.iloc[-1] > ma200.iloc[-1] and ma50.iloc[-2] <= ma200.iloc[-2]:
+            return "Golden Cross"
+        elif ma50.iloc[-1] < ma200.iloc[-1] and ma50.iloc[-2] >= ma200.iloc[-2]:
+            return "Death Cross"
+        else:
+            return "No Signal"
+    except Exception:
+        return "N/A"
 
 
-# -----------------
-# Streamlit UI
-# -----------------
+def get_company_info(symbol):
+    ticker = yf.Ticker(symbol)
+    info = {}
+    try:
+        info = ticker.get_info()
+    except Exception:
+        return None
 
-st.set_page_config(page_title="Stock RSI App", layout="wide")
+    return {
+        "shortName": info.get("shortName", symbol),
+        "forwardPE": info.get("forwardPE", None),
+        "epsForward": info.get("epsForward", None),
+        "returnOnEquity": info.get("returnOnEquity", None),
+        "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh", None),
+        "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow", None),
+    }
+
+
+def get_most_active(limit=25):
+    url = f"https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?count={limit}&scrIds=most_actives"
+    try:
+        data = requests.get(url).json()
+        quotes = data['finance']['result'][0]['quotes']
+        return [q['symbol'] for q in quotes]
+    except Exception as e:
+        print("Error fetching most active:", e)
+        return []
+
+
+# ==========================
+# Streamlit App
+# ==========================
+
 st.title("📈 Stock RSI & Fundamentals App")
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Screener"])
+tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Stock Screener"])
 
-# -----------------
-# Stock Analysis Tab
-# -----------------
+# --- TAB 1: Stock Analysis ---
 with tab1:
-    tickers_input = st.text_input("Enter ticker symbols (comma separated)", "AAPL, MSFT")
-    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+    st.header("Stock Analysis")
+    tickers = st.text_input("Enter ticker symbols (comma separated)", "AAPL, MSFT")
 
-    if st.button("Run Analysis"):
-        for ticker in tickers:
-            name, stock = get_stock_info(ticker)
-            if not stock:
-                st.error(f"Could not retrieve {ticker}")
-                continue
+    if tickers:
+        for symbol in [t.strip().upper() for t in tickers.split(",")]:
+            st.subheader(symbol)
+            try:
+                data = yf.download(symbol, period="1y")
+                if data.empty:
+                    st.error(f"Could not retrieve {symbol}")
+                    continue
 
-            st.subheader(f"{name} ({ticker})")
+                data["RSI"] = calculate_rsi(data)
+                ma50 = data['Close'].rolling(window=50).mean()
+                ma200 = data['Close'].rolling(window=200).mean()
 
-            data = stock.history(period="1y")
-            if data.empty:
-                st.warning(f"No data for {ticker}")
-                continue
+                st.line_chart(data[['Close', 'RSI']])
+                st.write("Golden/Death Cross Signal:", golden_cross(ma50, ma200))
 
-            # Calculate indicators
-            data["RSI"] = calculate_rsi(data)
-            ma50 = data["Close"].rolling(window=50).mean()
-            ma200 = data["Close"].rolling(window=200).mean()
-            cross_signal = golden_cross(ma50, ma200)
+            except Exception as e:
+                st.error(f"Error retrieving {symbol}: {e}")
 
-            latest_rsi = data["RSI"].iloc[-1]
-            st.metric("RSI (14d)", f"{latest_rsi:.2f}")
-            st.write(f"**MA Signal**: {cross_signal}")
-
-            st.line_chart(data[["Close", "RSI"]])
-
-# -----------------
-# Fundamentals Tab
-# -----------------
+# --- TAB 2: Fundamentals ---
 with tab2:
-    tickers_input_fund = st.text_input("Enter ticker symbols (comma separated)", "AAPL, MSFT", key="fund_input")
-    tickers_fund = [t.strip().upper() for t in tickers_input_fund.split(",") if t.strip()]
+    st.header("Fundamentals Lookup")
+    tickers = st.text_input("Enter ticker symbols (comma separated)", "GOOGL, AMZN")
 
-    if st.button("Get Fundamentals"):
-        fundamentals_data = []
-        for ticker in tickers_fund:
-            name, stock = get_stock_info(ticker)
-            if not stock:
-                st.error(f"Could not retrieve {ticker}")
-                continue
-            info = stock.info
-            fundamentals_data.append({
-                "Ticker": ticker,
-                "Name": name,
-                "Forward P/E": info.get("forwardPE"),
-                "EPS Growth": info.get("earningsQuarterlyGrowth"),
-                "Return on Capital": info.get("returnOnEquity"),
-                "52w High": info.get("fiftyTwoWeekHigh"),
-                "52w Low": info.get("fiftyTwoWeekLow")
-            })
-        df = pd.DataFrame(fundamentals_data)
-        st.dataframe(df)
+    if tickers:
+        fundamentals = []
+        for symbol in [t.strip().upper() for t in tickers.split(",")]:
+            info = get_company_info(symbol)
+            if info:
+                fundamentals.append(info)
+            else:
+                st.error(f"Could not retrieve {symbol}")
 
-# -----------------
-# Screener Tab
-# -----------------
+        if fundamentals:
+            df = pd.DataFrame(fundamentals)
+            # Color code fundamentals
+            def color_cells(val, col):
+                if col == "forwardPE":
+                    if val and val < 15:
+                        return "background-color: lightgreen"
+                    elif val and val > 30:
+                        return "background-color: lightcoral"
+                if col == "returnOnEquity":
+                    if val and val > 0.15:
+                        return "background-color: lightgreen"
+                    elif val and val < 0.05:
+                        return "background-color: lightcoral"
+                return ""
+
+            styled_df = df.style.apply(
+                lambda row: [color_cells(row[col], col) for col in df.columns],
+                axis=1
+            )
+            st.dataframe(styled_df, use_container_width=True)
+
+# --- TAB 3: Stock Screener ---
 with tab3:
-    st.write("### Most Active Stocks")
+    st.header("Most Active Stocks")
+    most_active = get_most_active(25)
+    if most_active:
+        results = []
+        for symbol in most_active:
+            info = get_company_info(symbol)
+            if info:
+                results.append(info)
 
-    try:
-        active = yf.get_day_most_active()
-        if not active.empty:
-            active = active.reset_index()
-
-            def show_details(ticker):
-                st.session_state["selected_ticker"] = ticker
-
-            for i, row in active.head(10).iterrows():
-                ticker = row["Symbol"]
-                name = row["Name"]
-                st.write(f"**{ticker}** - {name}")
-                if st.button(f"Analyze {ticker}", key=f"btn_{ticker}"):
-                    st.session_state["selected_ticker"] = ticker
-
-    except Exception as e:
-        st.error(f"Error fetching most active stocks: {e}")
-
-# If ticker clicked from Screener, load it into Analysis/Fundamentals
-if "selected_ticker" in st.session_state:
-    sel = st.session_state["selected_ticker"]
-    st.success(f"Loading {sel} into Analysis and Fundamentals tabs...")
+        if results:
+            df = pd.DataFrame(results)
+            st.dataframe(df, use_container_width=True)
+    else:
+        st.error("Error fetching most active stocks.")
 
