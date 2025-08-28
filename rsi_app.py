@@ -1,105 +1,149 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import datetime as dt
 
-# ---------- Helper Functions ----------
-def get_stock_data(ticker, period="1y"):
+# ---------- Helpers ----------
+def _extract_series(df: pd.DataFrame, col: str, ticker: str) -> pd.Series:
     try:
-        data = yf.download(ticker, period=period)
-        return data
+        return df[col]
+    except KeyError:
+        st.warning(f"{ticker}: Could not find {col}")
+        return pd.Series(dtype=float)
+
+def get_stock_data(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1y")
+        if hist.empty:
+            return None, None
+        return stock, hist
     except Exception as e:
         st.error(f"Error retrieving {ticker}: {e}")
-        return None
+        return None, None
 
-def calculate_rsi(data, window=14):
-    delta = data["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
+def compute_rsi(data: pd.Series, window: int = 14) -> pd.Series:
+    delta = data.diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.rolling(window=window, min_periods=window).mean()
+    avg_loss = loss.rolling(window=window, min_periods=window).mean()
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def get_fundamentals(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-
-        fundamentals = {
-            "Company Name": info.get("longName", "N/A"),
-            "EPS Growth": info.get("earningsQuarterlyGrowth", "N/A"),
-            "Forward PE": info.get("forwardPE", "N/A"),
-            "Return on Capital": info.get("returnOnEquity", "N/A"),
-        }
-        return fundamentals
-    except Exception as e:
-        st.error(f"Error fetching fundamentals for {ticker}: {e}")
-        return {}
-
-def moving_averages(data):
-    ma50 = data["Close"].rolling(window=50).mean()
-    ma200 = data["Close"].rolling(window=200).mean()
-    return ma50, ma200
-
 def golden_cross(ma50, ma200):
-    if ma50.iloc[-1] > ma200.iloc[-1]:
-        return "Golden Cross detected ✅"
-    else:
-        return "No Golden Cross ❌"
+    try:
+        if pd.isna(ma50.iloc[-1]) or pd.isna(ma200.iloc[-1]):
+            return "Not enough data for Golden Cross ❌"
+        if float(ma50.iloc[-1]) > float(ma200.iloc[-1]):
+            return "Golden Cross detected ✅"
+        else:
+            return "No Golden Cross ❌"
+    except Exception as e:
+        return f"Error calculating Golden Cross: {e}"
 
-# ---------- Streamlit App ----------
-st.set_page_config(page_title="Stock RSI & Fundamentals App", layout="wide")
+# ---------- Streamlit Layout ----------
+st.title("📈 Stock RSI & Fundamentals Dashboard")
 
-st.title("📈 Stock RSI & Fundamentals App")
+# Tabs
+tab1, tab2, tab3 = st.tabs(
+    ["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Stock Screener"]
+)
 
-# Tabs for navigation
-tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Stock Screener"])
-
-# ---------- Tab 1: Stock Analysis ----------
+# ---------------- Tab 1: Stock Analysis ----------------
 with tab1:
-    ticker_input = st.text_input("Enter Ticker Symbol or Company Name", "AAPL").upper()
+    st.header("🔍 Stock Analysis")
 
-    if ticker_input:
-        data = get_stock_data(ticker_input, period="1y")
+    user_input = st.text_input("Enter stock ticker or company name (e.g., AAPL or Apple):", "AAPL")
 
-        if data is not None and not data.empty:
-            latest_price = data["Close"].iloc[-1]
-            rsi = calculate_rsi(data)
+    if user_input:
+        ticker = user_input.upper().strip()
+        stock, hist = get_stock_data(ticker)
 
-            ma50, ma200 = moving_averages(data)
+        if stock and hist is not None and not hist.empty:
+            company_name = stock.info.get("longName", "Unknown Company")
+            st.subheader(f"{company_name} ({ticker})")
+
+            hist["RSI"] = compute_rsi(hist["Close"])
+            ma50 = hist["Close"].rolling(50).mean()
+            ma200 = hist["Close"].rolling(200).mean()
             cross_signal = golden_cross(ma50, ma200)
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Current Price", f"${latest_price:.2f}")
-            col2.metric("52-Week High", f"${data['High'].max():.2f}")
-            col3.metric("52-Week Low", f"${data['Low'].min():.2f}")
+            st.line_chart(hist[["Close", "RSI"]])
+            st.write(f"📊 **Golden Cross Signal:** {cross_signal}")
 
-            col4, col5 = st.columns(2)
-            col4.metric("200-Day MA", f"${ma200.iloc[-1]:.2f}")
-            col5.metric("RSI (14)", f"{rsi.iloc[-1]:.2f}")
-
-            st.info(cross_signal)
-
-            st.line_chart(data["Close"], use_container_width=True)
-
-# ---------- Tab 2: Fundamentals ----------
+# ---------------- Tab 2: Fundamentals ----------------
 with tab2:
-    if ticker_input:
-        fundamentals = get_fundamentals(ticker_input)
+    st.header("📊 Fundamentals")
 
-        if fundamentals:
-            st.subheader(f"Fundamentals for {fundamentals.get('Company Name', ticker_input)}")
+    if user_input:
+        ticker = user_input.upper().strip()
+        stock, hist = get_stock_data(ticker)
 
-            def color_value(val, good, bad):
-                try:
-                    if val == "N/A":
-                        return "⚪ N/A"
-                    if val >= good:
-                        return f"🟢 {val:.2f}"
-                    elif val <= bad:
-                        return f"🔴 {val:.2f}"
+        if stock:
+            info = stock.info
+            company_name = info.get("longName", "Unknown Company")
+            st.subheader(f"{company_name} ({ticker})")
+
+            fundamentals = {
+                "Forward P/E": info.get("forwardPE"),
+                "EPS Growth (YoY)": info.get("earningsQuarterlyGrowth"),
+                "Return on Capital": info.get("returnOnEquity")
+            }
+
+            for metric, value in fundamentals.items():
+                if value is None:
+                    st.write(f"{metric}: Data not available")
+                else:
+                    if metric == "Forward P/E":
+                        color = "🟢" if value < 20 else "🟡" if value < 35 else "🔴"
+                    elif metric == "EPS Growth (YoY)":
+                        color = "🟢" if value > 0.1 else "🟡" if value > 0 else "🔴"
+                    elif metric == "Return on Capital":
+                        color = "🟢" if value > 0.15 else "🟡" if value > 0.05 else "🔴"
                     else:
-                        return f"🟡 {val:.2f}"
-                except:
-                    return
+                        color = "⚪"
+
+                    st.write(f"{metric}: {value:.2f} {color}")
+
+# ---------------- Tab 3: Stock Screener ----------------
+with tab3:
+    st.header("🧮 Stock Screener (Most Active US Stocks)")
+
+    # Fetch most active stocks
+    try:
+        tickers = yf.Tickers(" ".join([
+            "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA",
+            "NVDA", "AMD", "NFLX", "CSCO", "INTC", "BAC",
+            "JPM", "XOM", "PFE", "KO", "PEP", "WMT", "DIS"
+        ]))
+    except Exception as e:
+        st.error(f"Error fetching US tickers: {e}")
+        tickers = None
+
+    if tickers:
+        pe_max = st.number_input("Max Forward P/E", value=25.0)
+        eps_min = st.number_input("Min EPS Growth (YoY)", value=0.05)
+        roc_min = st.number_input("Min Return on Capital", value=0.1)
+
+        results = []
+        for t in tickers.tickers.keys():
+            try:
+                info = tickers.tickers[t].info
+                pe = info.get("forwardPE")
+                eps = info.get("earningsQuarterlyGrowth")
+                roc = info.get("returnOnEquity")
+                name = info.get("shortName", t)
+
+                if pe and eps and roc:
+                    if pe < pe_max and eps > eps_min and roc > roc_min:
+                        results.append([t, name, pe, eps, roc])
+            except Exception:
+                continue
+
+        if results:
+            df = pd.DataFrame(results, columns=["Ticker", "Name", "Forward P/E", "EPS Growth", "Return on Capital"])
+            st.dataframe(df)
+        else:
+            st.write("No stocks matched your criteria.")
 
