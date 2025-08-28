@@ -1,158 +1,168 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
 
-# ---------- Helpers ----------
-def get_stock_data(ticker: str, period="1y"):
+st.set_page_config(page_title="RSI & Stock Analyzer", layout="wide")
+
+# ---------------- Helper Functions ---------------- #
+
+def resolve_ticker(user_input: str):
+    """Resolve a company name or ticker symbol to a valid ticker."""
+    user_input = user_input.strip().upper()
+
+    # If it already looks like a ticker (short and letters only), return directly
+    if len(user_input) <= 5 and user_input.isalpha():
+        return user_input
+
+    # Otherwise, try searching Yahoo Finance
     try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period=period)
-        if df.empty:
-            return None, None
-        info = stock.info
-        return df, info
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={user_input}"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        results = r.json().get("quotes", [])
+        if results:
+            return results[0]["symbol"]
     except Exception as e:
-        st.error(f"Error retrieving {ticker}: {e}")
-        return None, None
+        st.error(f"Lookup failed for {user_input}: {e}")
 
-def calculate_rsi(data: pd.DataFrame, window=14):
+    return None
+
+
+def compute_rsi(data, window=14):
+    """Compute RSI from closing price data."""
     delta = data["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
     rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
+
 
 def golden_cross(ma50, ma200):
-    if ma50.empty or ma200.empty:
-        return None
+    """Detect Golden Cross or Death Cross signals."""
     try:
         if ma50.iloc[-1] > ma200.iloc[-1] and ma50.iloc[-2] <= ma200.iloc[-2]:
-            return "Golden Cross"
+            return "🟢 Golden Cross (Bullish)"
         elif ma50.iloc[-1] < ma200.iloc[-1] and ma50.iloc[-2] >= ma200.iloc[-2]:
-            return "Death Cross"
+            return "🔴 Death Cross (Bearish)"
         else:
-            return None
+            return "⚪ No Cross"
     except Exception:
-        return None
+        return "⚪ Not enough data"
 
-# ---------- Streamlit UI ----------
-st.set_page_config(page_title="Stock RSI & Fundamentals", layout="wide")
 
-st.title("📈 Stock RSI, Moving Averages & Fundamentals")
+def fetch_stock_data(ticker):
+    """Fetch stock price history and fundamentals."""
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1y")
+        return stock, hist
+    except Exception as e:
+        st.error(f"Error fetching {ticker}: {e}")
+        return None, None
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Stock Screener"])
 
+def color_value(val, good, bad):
+    """Color fundamentals: green if good, red if bad."""
+    try:
+        val = float(val)
+        if val >= good:
+            return f"🟢 {val}"
+        elif val <= bad:
+            return f"🔴 {val}"
+        else:
+            return f"⚪ {val}"
+    except:
+        return f"⚪ {val}"
+
+
+# ---------------- Streamlit UI ---------------- #
+
+st.title("📈 RSI & Stock Analyzer with Fundamentals")
+
+tab1, tab2, tab3 = st.tabs(["🔍 Stock Analysis", "📊 Fundamentals", "🧮 Screener"])
+
+# --------------- Stock Analysis Tab --------------- #
 with tab1:
-    st.header("🔍 Stock Analysis")
-
-    user_input = st.text_input("Enter a stock ticker or company name:", "AAPL")
+    st.header("Stock Analysis (RSI & Moving Averages)")
+    user_input = st.text_input("Enter stock ticker(s) or company name(s) (comma separated):", "AAPL, MSFT")
 
     if user_input:
-        try:
-            ticker = yf.Ticker(user_input).ticker
-        except:
-            ticker = user_input.upper()
-        df, info = get_stock_data(ticker)
+        tickers = [t.strip() for t in user_input.split(",") if t.strip()]
 
-        if df is not None and info is not None:
-            st.subheader(f"{info.get('longName', ticker)} ({ticker})")
+        for entry in tickers:
+            ticker = resolve_ticker(entry)
+            if not ticker:
+                st.error(f"Could not resolve '{entry}' to a valid ticker.")
+                continue
 
-            # Moving averages
-            ma50 = df["Close"].rolling(window=50).mean()
-            ma200 = df["Close"].rolling(window=200).mean()
-            cross_signal = golden_cross(ma50, ma200)
+            stock, hist = fetch_stock_data(ticker)
+            if hist is None or hist.empty:
+                st.error(f"No data found for {ticker}")
+                continue
 
-            # RSI
-            rsi = calculate_rsi(df)
+            hist["RSI"] = compute_rsi(hist)
+            hist["MA50"] = hist["Close"].rolling(window=50).mean()
+            hist["MA200"] = hist["Close"].rolling(window=200).mean()
 
-            # Chart
-            chart_data = pd.DataFrame({
-                "Close": df["Close"],
-                "50 MA": ma50,
-                "200 MA": ma200,
-                "RSI": rsi
-            })
-            st.line_chart(chart_data[["Close", "50 MA", "200 MA"]])
+            st.subheader(f"📊 {ticker}")
+            st.line_chart(hist[["Close", "MA50", "MA200"]])
+            st.line_chart(hist["RSI"])
 
-            if cross_signal:
-                st.success(f"Signal: **{cross_signal}**")
-            else:
-                st.info("No Golden/Death Cross detected.")
+            signal = golden_cross(hist["MA50"], hist["MA200"])
+            st.write(f"**Crossover Signal:** {signal}")
 
-            st.metric("Latest RSI", f"{rsi.iloc[-1]:.2f}")
 
+# --------------- Fundamentals Tab --------------- #
 with tab2:
-    st.header("📊 Fundamentals")
+    st.header("Company Fundamentals")
+    fundamentals_input = st.text_input("Enter stock ticker(s) or company name(s):", "AAPL")
 
-    if user_input:
-        try:
-            ticker = yf.Ticker(user_input).ticker
-        except:
-            ticker = user_input.upper()
-        df, info = get_stock_data(ticker)
+    if fundamentals_input:
+        tickers = [t.strip() for t in fundamentals_input.split(",") if t.strip()]
 
-        if info:
-            forward_pe = info.get("forwardPE", "N/A")
-            eps_growth = info.get("earningsQuarterlyGrowth", "N/A")
-            roe = info.get("returnOnEquity", "N/A")
+        for entry in tickers:
+            ticker = resolve_ticker(entry)
+            if not ticker:
+                st.error(f"Could not resolve '{entry}' to a valid ticker.")
+                continue
+
+            stock, _ = fetch_stock_data(ticker)
+            if not stock:
+                continue
+
+            info = stock.info
+            st.subheader(f"🏢 {ticker}")
 
             fundamentals = {
-                "Forward P/E": forward_pe,
-                "EPS Growth (YoY)": eps_growth,
-                "Return on Equity": roe
+                "Market Cap": info.get("marketCap", "N/A"),
+                "PE Ratio": info.get("trailingPE", "N/A"),
+                "Forward PE": info.get("forwardPE", "N/A"),
+                "Dividend Yield": info.get("dividendYield", "N/A"),
+                "Profit Margin": info.get("profitMargins", "N/A"),
+                "ROE": info.get("returnOnEquity", "N/A"),
             }
-            st.write(pd.DataFrame.from_dict(fundamentals, orient="index", columns=["Value"]))
 
+            colored = {
+                k: color_value(v, good=15, bad=5) if isinstance(v, (int, float)) else v
+                for k, v in fundamentals.items()
+            }
+
+            st.table(pd.DataFrame(colored, index=[0]).T)
+
+
+# --------------- Screener Tab --------------- #
 with tab3:
-    st.header("🧮 Stock Screener")
+    st.header("Top Movers Screener (Most Active US Stocks)")
+    try:
+        url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=25"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        results = r.json()["finance"]["result"][0]["quotes"]
 
-    st.write("Filter **Most Active US Stocks** based on your criteria.")
+        screener_df = pd.DataFrame(results)[
+            ["symbol", "shortName", "regularMarketPrice", "regularMarketChangePercent", "regularMarketVolume"]
+        ]
+        st.dataframe(screener_df)
 
-    # Screener inputs
-    pe_max = st.number_input("Max Forward P/E", min_value=0.0, value=25.0)
-    eps_min = st.number_input("Min EPS Growth (YoY)", min_value=-1.0, value=0.0)
-    roe_min = st.number_input("Min Return on Equity", min_value=-1.0, value=0.1)
-    rsi_min = st.slider("RSI Min", 0, 100, 30)
-    rsi_max = st.slider("RSI Max", 0, 100, 70)
-
-    if st.button("Run Screener 🚀"):
-        st.info("Fetching most active US stocks...")
-        try:
-            tickers = yf.Tickers("AAPL MSFT AMZN TSLA NVDA META NFLX GOOGL INTC AMD JPM BAC XOM CVX WMT T")
-            results = []
-
-            for t in tickers.tickers:
-                df, info = get_stock_data(t, period="6mo")
-                if df is None or info is None:
-                    continue
-
-                rsi = calculate_rsi(df)
-                latest_rsi = rsi.iloc[-1] if not rsi.empty else None
-                fpe = info.get("forwardPE")
-                eps_growth = info.get("earningsQuarterlyGrowth")
-                roe = info.get("returnOnEquity")
-
-                if not all([fpe, eps_growth, roe, latest_rsi]):
-                    continue
-
-                if fpe <= pe_max and eps_growth >= eps_min and roe >= roe_min and rsi_min <= latest_rsi <= rsi_max:
-                    results.append({
-                        "Ticker": t,
-                        "Company": info.get("longName", t),
-                        "Forward P/E": fpe,
-                        "EPS Growth": eps_growth,
-                        "ROE": roe,
-                        "RSI": latest_rsi
-                    })
-
-            if results:
-                df_results = pd.DataFrame(results)
-                st.success(f"✅ Found {len(df_results)} matching stocks.")
-                st.dataframe(df_results)
-            else:
-                st.warning("No stocks matched your filters.")
-        except Exception as e:
-            st.error(f"Error fetching screener data: {e}")
+    except Exception as e:
+        st.error(f"Error fetching most active stocks: {e}")
 
