@@ -1,4 +1,4 @@
-# rsi_app.py — RSI • MAs • Factor Watchlist (Value • Growth • Momentum)
+# rsi_app.py — RSI • MAs • Factor Watchlist with FactorBlend & dark-theme color bands
 import time
 from typing import List, Dict
 
@@ -17,7 +17,6 @@ def _clean_tickers(s: str, cap: int = 10) -> List[str]:
     if len(tickers) > cap:
         st.warning(f"Limiting to the first {cap} tickers to avoid rate limits.")
         tickers = tickers[:cap]
-    # keep letters/numbers/dots (yfinance supports dots for some tickers)
     tickers = [t for t in tickers if t.replace(".", "").isalnum()]
     return tickers
 
@@ -28,15 +27,10 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
     rs = avg_gain / (avg_loss.replace(0, pd.NA))
-    out = 100 - (100 / (1 + rs))
-    return out
+    return 100 - (100 / (1 + rs))
 
 @st.cache_data(ttl=3600)
 def fetch_data_batch(tickers: List[str], period: str = "1y") -> pd.DataFrame:
-    """
-    Batch download to minimize rate limiting. Cached for 1 hour.
-    Returns DataFrame; if multiple tickers, columns are MultiIndex (ticker, field).
-    """
     delays = [0, 3, 6]
     last_err = None
     for d in delays:
@@ -58,7 +52,6 @@ def fetch_data_batch(tickers: List[str], period: str = "1y") -> pd.DataFrame:
 
 @st.cache_data(ttl=1800)
 def get_fast_info_safe(ticker: str) -> Dict:
-    """Light fundamentals via fast_info; cached to avoid repeated calls."""
     try:
         fi = yf.Ticker(ticker).fast_info
         return {
@@ -74,7 +67,6 @@ def get_fast_info_safe(ticker: str) -> Dict:
 
 @st.cache_data(ttl=21600)  # 6 hours
 def get_info_safe(ticker: str) -> Dict:
-    """Heavier fundamentals via get_info(), cached & gently retried."""
     delays = [0, 1.5]
     for d in delays:
         try:
@@ -88,17 +80,12 @@ def get_info_safe(ticker: str) -> Dict:
     return {}
 
 def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Given a single-ticker DataFrame with columns [Open, High, Low, Close, Volume],
-    compute RSI(14), SMA(50), SMA(200), 52w High/Low, and MA cross signal.
-    """
     out = pd.DataFrame(index=df.index.copy())
     out["Close"] = df["Close"]
     out["RSI14"] = rsi(df["Close"], 14)
     out["SMA50"] = df["Close"].rolling(50).mean()
     out["SMA200"] = df["Close"].rolling(200).mean()
 
-    # Approx last 252 trading days ~ 52 weeks
     last_252 = df.tail(252)
     out.attrs["52w_high"] = float(last_252["High"].max()) if not last_252.empty else None
     out.attrs["52w_low"] = float(last_252["Low"].min()) if not last_252.empty else None
@@ -116,7 +103,6 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def extract_single(df_all: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    """Return flat single-ticker frame with Open/High/Low/Close/Volume."""
     if isinstance(df_all.columns, pd.MultiIndex):
         if ticker not in df_all.columns.get_level_values(0):
             raise KeyError(f"{ticker} not in downloaded data.")
@@ -167,10 +153,10 @@ def safe_num(x):
 # ============================
 def band(value, good, mid, reverse=False):
     """
-    Return a score 0/50/100 based on thresholds.
-    reverse=True -> lower is better (e.g., P/E); reverse=False -> higher is better (e.g., ROIC).
-    For reverse=True, good=upper bound for green, mid=upper bound for yellow.
-    For reverse=False, good=lower bound for green, mid=lower bound for yellow.
+    Return 0/50/100 score using thresholds.
+    reverse=True => lower better (e.g., P/E). reverse=False => higher better (e.g., ROIC).
+    For reverse=True: good=upper bound green, mid=upper bound yellow.
+    For reverse=False: good=lower bound green, mid=lower bound yellow.
     """
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return 0
@@ -206,7 +192,6 @@ def score_growth(roic):
     return float(band(roic, 0.15, 0.08, reverse=False))
 
 def score_momentum(rsi_val, ret_1m, ret_3m):
-    # Balanced RSI band: 55–65 best
     if rsi_val is None or pd.isna(rsi_val):
         s_rsi = 0
     else:
@@ -215,11 +200,42 @@ def score_momentum(rsi_val, ret_1m, ret_3m):
         elif 45 <= r < 55 or 65 < r <= 70: s_rsi = 50
         elif r < 30 or r > 70: s_rsi = 0
         else: s_rsi = 50
-
     s_1m = 100 if (ret_1m is not None and ret_1m > 0) else 0
     s_3m = 100 if (ret_3m is not None and ret_3m > 0) else 0
-    parts = [s_rsi, s_1m, s_3m]
-    return round(sum(parts)/len(parts), 1)
+    return round((s_rsi + s_1m + s_3m) / 3, 1)
+
+# Dark-theme friendly color utilities
+def cell_css(bg, fg):
+    return f"background-color:{bg};color:{fg}"
+
+DARK_GREEN = "#1b5e20"
+DARK_YELLOW = "#f9a825"  # black text readable
+DARK_RED = "#b71c1c"
+NEUTRAL = "#424242"      # only if needed
+
+def color_band_val(v, green, yellow, reverse=False):
+    try:
+        x = float(v)
+    except:
+        return ""
+    if reverse:  # lower better
+        if x <= green: return cell_css(DARK_GREEN, "#ffffff")
+        if x <= yellow: return cell_css(DARK_YELLOW, "#000000")
+        return cell_css(DARK_RED, "#ffffff")
+    else:        # higher better
+        if x >= green: return cell_css(DARK_GREEN, "#ffffff")
+        if x >= yellow: return cell_css(DARK_YELLOW, "#000000")
+        return cell_css(DARK_RED, "#ffffff")
+
+def color_band_rsi(v):
+    try:
+        r = float(v)
+    except:
+        return ""
+    if 55 <= r <= 65: return cell_css(DARK_GREEN, "#ffffff")
+    if 45 <= r < 55 or 65 < r <= 70: return cell_css(DARK_YELLOW, "#000000")
+    if r < 30 or r > 70: return cell_css(DARK_RED, "#ffffff")
+    return ""
 
 # ============================
 # Tabs
@@ -273,11 +289,11 @@ with tab2:
             st.dataframe(df, use_container_width=True)
 
 # ----------------------------
-# Tab 3: Watchlist — factor view with color bands
+# Tab 3: Watchlist — factor view + FactorBlend
 # ----------------------------
 with tab3:
     st.subheader("🗒️ Watchlist — Factor View (Value • Growth • Momentum)")
-    st.caption("Paste/upload tickers. We’ll compute RSI, 1M/3M returns, and valuation/quality factors with color bands.")
+    st.caption("Paste/upload tickers. We’ll compute RSI, 1M/3M returns, and valuation/quality factors with clear color bands.")
 
     colA, colB = st.columns(2)
     with colA:
@@ -297,7 +313,34 @@ with tab3:
         except Exception as e:
             st.error(f"CSV error: {e}")
 
-    if st.button("Analyze Watchlist (Factors)"):
+    # Weight presets & custom
+    st.markdown("#### Factor Weights")
+    preset = st.radio(
+        "Choose weights",
+        ["Balanced (V40 / G20 / M40)", "Value Tilt (V60 / G20 / M20)", "Momentum Tilt (V20 / G20 / M60)", "Custom"],
+        horizontal=True,
+    )
+
+    if preset == "Balanced (V40 / G20 / M40)":
+        wV, wG, wM = 40, 20, 40
+    elif preset == "Value Tilt (V60 / G20 / M20)":
+        wV, wG, wM = 60, 20, 20
+    elif preset == "Momentum Tilt (V20 / G20 / M60)":
+        wV, wG, wM = 20, 20, 60
+    else:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            wV = st.slider("Value %", 0, 100, 40)
+        with c2:
+            wG = st.slider("Growth %", 0, 100, 20)
+        with c3:
+            wM = st.slider("Momentum %", 0, 100, 40)
+        total = wV + wG + wM
+        if total == 0:
+            st.warning("Weights sum to 0 — defaulting to Balanced.")
+            wV, wG, wM = 40, 20, 40
+
+    if st.button("Analyze Watchlist (Factors + Blend)"):
         if not tickers_w:
             st.warning("No tickers detected.")
         else:
@@ -320,7 +363,6 @@ with tab3:
                         if not dfp.empty and len(dfp) > 64:
                             close = dfp["Close"]
                             rsival = rsi(close, 14).iloc[-1]
-                            # Approx windows: 21 trading days ~ 1M, 63 ~ 3M
                             ret_1m = float((close.iloc[-1] / close.iloc[-22] - 1.0) * 100.0) if len(close) > 21 else None
                             ret_3m = float((close.iloc[-1] / close.iloc[-64] - 1.0) * 100.0) if len(close) > 63 else None
                 except Exception:
@@ -338,6 +380,11 @@ with tab3:
                 growth_score   = score_growth(roic)
                 momentum_score = score_momentum(rsival, ret_1m, ret_3m)
 
+                # FactorBlend (weights % → 0..1)
+                w_sum = wV + wG + wM
+                wVn, wGn, wMn = wV / w_sum, wG / w_sum, wM / w_sum
+                factor_blend = round(value_score * wVn + growth_score * wGn + momentum_score * wMn, 1)
+
                 rows.append({
                     "Ticker": t,
                     "RSI(14)": round(rsival, 2) if rsival is not None else "—",
@@ -351,6 +398,7 @@ with tab3:
                     "ValueScore": value_score,
                     "GrowthScore": growth_score,
                     "MomentumScore": momentum_score,
+                    "FactorBlend": factor_blend,
                 })
 
             if not rows:
@@ -358,13 +406,14 @@ with tab3:
             else:
                 df = pd.DataFrame(rows)
 
-                # Sorting preference
                 sort_choice = st.radio(
                     "Sort by",
-                    ["Lowest RSI", "Highest MomentumScore", "Highest ValueScore", "Highest GrowthScore"],
+                    ["FactorBlend", "Lowest RSI", "Highest MomentumScore", "Highest ValueScore", "Highest GrowthScore"],
                     horizontal=True,
                 )
-                if sort_choice == "Lowest RSI":
+                if sort_choice == "FactorBlend":
+                    df = df.sort_values("FactorBlend", ascending=False)
+                elif sort_choice == "Lowest RSI":
                     df["_sort"] = pd.to_numeric(df["RSI(14)"], errors="coerce")
                     df = df.sort_values("_sort", ascending=True).drop(columns=["_sort"])
                 elif sort_choice == "Highest MomentumScore":
@@ -374,21 +423,7 @@ with tab3:
                 else:
                     df = df.sort_values("GrowthScore", ascending=False)
 
-                # Color bands via Styler
-                def color_band_val(v, green, yellow, reverse=False):
-                    try:
-                        x = float(v)
-                    except:
-                        return ""
-                    if reverse:  # lower better
-                        if x <= green: return "background-color:#c8e6c9"  # green
-                        if x <= yellow: return "background-color:#fff9c4" # yellow
-                        return "background-color:#ffcdd2"                  # red
-                    else:        # higher better
-                        if x >= green: return "background-color:#c8e6c9"
-                        if x >= yellow: return "background-color:#fff9c4"
-                        return "background-color:#ffcdd2"
-
+                # Dark-theme friendly color bands
                 def styler(row: pd.Series):
                     styles = []
                     for col, val in row.items():
@@ -397,22 +432,13 @@ with tab3:
                         elif col == "PEG":            styles.append(color_band_val(val, 1, 2, reverse=True))
                         elif col == "D/E":            styles.append(color_band_val(val, 0.5, 1, reverse=True))
                         elif col == "ROIC":           styles.append(color_band_val(val, 0.15, 0.08, reverse=False))
-                        elif col == "RSI(14)":
-                            try:
-                                r = float(val)
-                            except:
-                                styles.append("")
-                                continue
-                            if 55 <= r <= 65: styles.append("background-color:#c8e6c9")
-                            elif 45 <= r < 55 or 65 < r <= 70: styles.append("background-color:#fff9c4")
-                            elif r < 30 or r > 70: styles.append("background-color:#ffcdd2")
-                            else: styles.append("")
+                        elif col == "RSI(14)":        styles.append(color_band_rsi(val))
                         elif col in ["1M %", "3M %"]:
                             try:
-                                styles.append("background-color:#c8e6c9" if float(val) > 0 else "background-color:#ffcdd2")
+                                styles.append(cell_css(DARK_GREEN, "#ffffff") if float(val) > 0 else cell_css(DARK_RED, "#ffffff"))
                             except:
                                 styles.append("")
-                        elif col in ["ValueScore", "GrowthScore", "MomentumScore"]:
+                        elif col in ["ValueScore", "GrowthScore", "MomentumScore", "FactorBlend"]:
                             styles.append(color_band_val(val, 75, 50, reverse=False))
                         else:
                             styles.append("")
@@ -421,11 +447,10 @@ with tab3:
                 styled = df.style.apply(styler, axis=1).format(precision=2)
                 st.dataframe(styled, use_container_width=True)
 
-                # Quick actions
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("Open top 5 by ValueScore in Analysis"):
-                        top = df.sort_values("ValueScore", ascending=False)["Ticker"].head(5).tolist()
+                    if st.button("Open top 5 by FactorBlend in Analysis"):
+                        top = df.sort_values("FactorBlend", ascending=False)["Ticker"].head(5).tolist()
                         st.session_state["selected_tickers"] = ",".join(top)
                         st.success(f"Loaded {', '.join(top)} into Analysis tab.")
                 with c2:
