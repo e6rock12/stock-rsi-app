@@ -1,5 +1,7 @@
 streamlit
 yfinance
 pandas
-lmxl
+beautifulsoup4
+html5lib
+requests
 
