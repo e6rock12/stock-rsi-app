@@ -412,7 +412,7 @@ with tab3:
         total = wV + wG + wM
         if total == 0:
             st.warning("Weights sum to 0 — defaulting to Balanced.")
-            wV, wG, wM = 40, 20, 40)
+            wV, wG, wM = 40, 20, 40
 
     if st.button("Analyze Watchlist (Factors + Blend)"):
         if not tickers_w:
