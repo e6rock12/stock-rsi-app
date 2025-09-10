@@ -67,6 +67,7 @@ def get_fast_info_safe(ticker: str) -> Dict:
 
 @st.cache_data(ttl=21600)  # 6 hours
 def get_info_safe(ticker: str) -> Dict:
+    """Heavier fundamentals via get_info(), cached & gently retried."""
     delays = [0, 1.5]
     for d in delays:
         try:
@@ -80,12 +81,17 @@ def get_info_safe(ticker: str) -> Dict:
     return {}
 
 def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Given a single-ticker DataFrame with columns [Open, High, Low, Close, Volume],
+    compute RSI(14), SMA(50), SMA(200), 52w High/Low, and MA cross signal.
+    """
     out = pd.DataFrame(index=df.index.copy())
     out["Close"] = df["Close"]
     out["RSI14"] = rsi(df["Close"], 14)
     out["SMA50"] = df["Close"].rolling(50).mean()
     out["SMA200"] = df["Close"].rolling(200).mean()
 
+    # Approx last 252 trading days ~ 52 weeks
     last_252 = df.tail(252)
     out.attrs["52w_high"] = float(last_252["High"].max()) if not last_252.empty else None
     out.attrs["52w_low"] = float(last_252["Low"].min()) if not last_252.empty else None
@@ -103,6 +109,7 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def extract_single(df_all: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Return flat single-ticker frame with Open/High/Low/Close/Volume."""
     if isinstance(df_all.columns, pd.MultiIndex):
         if ticker not in df_all.columns.get_level_values(0):
             raise KeyError(f"{ticker} not in downloaded data.")
@@ -238,6 +245,73 @@ def color_band_rsi(v):
     return ""
 
 # ============================
+# Fundamentals fallbacks & formatting (PATCH)
+# ============================
+@st.cache_data(ttl=21600)  # 6h
+def fundamental_snapshot(ticker: str) -> dict:
+    """
+    Return a merged fundamentals snapshot:
+    - try fast_info first (cheap),
+    - fill gaps from get_info() (heavier, cached).
+    """
+    fi = get_fast_info_safe(ticker) or {}
+    pe = fi.get("trailing_pe")
+    fpe = fi.get("forward_pe")
+    div = fi.get("dividend_yield")
+    pb  = fi.get("price_to_book")
+    last_px = fi.get("last_price")
+    mcap = fi.get("market_cap")
+
+    # Fallbacks only when missing
+    info = {}
+    if any(v is None for v in [pe, fpe, div, pb, last_px, mcap]):
+        info = get_info_safe(ticker) or {}
+        if pe    is None: pe    = info.get("trailingPE")
+        if fpe   is None: fpe   = info.get("forwardPE")
+        if div   is None: div   = info.get("dividendYield")  # fraction (e.g., 0.0123)
+        if pb    is None: pb    = info.get("priceToBook")
+        if last_px is None: last_px = info.get("currentPrice")
+        if mcap  is None: mcap  = info.get("marketCap")
+
+    return {
+        "Ticker": ticker,
+        "Last Price": last_px,
+        "Mkt Cap": mcap,
+        "Trailing PE": pe,
+        "Forward PE": fpe,
+        "Div Yield": div,       # raw fraction if from info
+        "P/B": pb,
+    }
+
+def _fmt_num(x, digs=2, comma=True):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return "—"
+    try:
+        x = float(x)
+        if comma:
+            return f"{x:,.{digs}f}"
+        else:
+            return f"{x:.{digs}f}"
+    except Exception:
+        return "—"
+
+def _fmt_int(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return "—"
+    try:
+        return f"{float(x):,.0f}"
+    except Exception:
+        return "—"
+
+def _fmt_pct(x, digs=2):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return "—"
+    try:
+        return f"{float(x)*100:.{digs}f}%"
+    except Exception:
+        return "—"
+
+# ============================
 # Tabs
 # ============================
 tab1, tab2, tab3 = st.tabs(["🔍 Analysis", "📊 Fundamentals (light)", "🗒️ Watchlist (Factors)"])
@@ -263,29 +337,29 @@ with tab1:
                 st.error(f"Download error: {e}")
 
 # ----------------------------
-# Tab 2: Fundamentals (light)
+# Tab 2: Fundamentals (light) — with fallbacks and formatting (PATCH APPLIED)
 # ----------------------------
 with tab2:
-    st.subheader("📊 Quick Fundamentals (cached & rate-limit friendly)")
+    st.subheader("📊 Quick Fundamentals (cached & fallback to get_info for missing fields)")
 
     t_input_f = st.text_input("Tickers (comma-separated):", "AAPL, MSFT", key="funds_input")
     tickers_f = _clean_tickers(t_input_f, cap=8)
 
     if st.button("Get Fundamentals"):
-        rows = []
-        for t in tickers_f:
-            fi = get_fast_info_safe(t)
-            rows.append({
-                "Ticker": t,
-                "Last Price": fi.get("last_price", "—"),
-                "Mkt Cap": fi.get("market_cap", "—"),
-                "Trailing PE": fi.get("trailing_pe", "—"),
-                "Forward PE": fi.get("forward_pe", "—"),
-                "Div Yield": fi.get("dividend_yield", "—"),
-                "P/B": fi.get("price_to_book", "—"),
-            })
-        if rows:
-            df = pd.DataFrame(rows)
+        if not tickers_f:
+            st.warning("Please enter at least one ticker.")
+        else:
+            snaps = [fundamental_snapshot(t) for t in tickers_f]
+            df = pd.DataFrame(snaps, columns=["Ticker","Last Price","Mkt Cap","Trailing PE","Forward PE","Div Yield","P/B"])
+
+            # Pretty formatting
+            df["Last Price"] = df["Last Price"].apply(lambda v: _fmt_num(v, 2))
+            df["Mkt Cap"]    = df["Mkt Cap"].apply(_fmt_int)
+            df["Trailing PE"]= df["Trailing PE"].apply(lambda v: _fmt_num(v, 2, comma=False))
+            df["Forward PE"] = df["Forward PE"].apply(lambda v: _fmt_num(v, 2, comma=False))
+            df["P/B"]        = df["P/B"].apply(lambda v: _fmt_num(v, 2, comma=False))
+            df["Div Yield"]  = df["Div Yield"].apply(lambda v: _fmt_pct(v, 2))  # 0.0123 → 1.23%
+
             st.dataframe(df, use_container_width=True)
 
 # ----------------------------
@@ -338,7 +412,7 @@ with tab3:
         total = wV + wG + wM
         if total == 0:
             st.warning("Weights sum to 0 — defaulting to Balanced.")
-            wV, wG, wM = 40, 20, 40
+            wV, wG, wM = 40, 20, 40)
 
     if st.button("Analyze Watchlist (Factors + Blend)"):
         if not tickers_w:
