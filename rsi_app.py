@@ -1,4 +1,4 @@
-# rsi_app.py — RSI • MAs • Factor Watchlist with FactorBlend, dark-theme bands, and inline tips/guides
+# rsi_app.py — RSI • MAs • Factor Watchlist with FactorBlend, dark-theme bands, Tips/Guides, and My Portfolio + Sector Breakdown
 import time
 from typing import List, Dict
 
@@ -31,17 +31,17 @@ TIPS = {
 }
 
 def tip(text_key: str):
-    """Return a short inline tip string for captions (respects sidebar toggle)."""
     if st.session_state.get("show_inline_tips", True):
         msg = TIPS.get(text_key, "")
         if msg:
             st.caption(f"ℹ️ {msg}")
 
-# Sidebar controls: inline tips & Guides
+# Sidebar controls
 with st.sidebar:
     st.markdown("### Settings")
-    st.session_state["show_inline_tips"] = st.toggle("Show inline tips", value=True, help="Show one-line tips under metrics/tables.")
-
+    st.session_state["show_inline_tips"] = st.toggle(
+        "Show inline tips", value=True, help="Show one-line tips under metrics/tables."
+    )
     with st.expander("📘 Guides & Definitions", expanded=False):
         st.markdown(
             """
@@ -184,7 +184,6 @@ def display_ticker_panel(ticker: str, df_all: pd.DataFrame):
         c2.metric("RSI(14)", f"{latest_rsi:,.2f}")
         c3.metric("52w High / Low", f"${high52:,.2f} / ${low52:,.2f}" if high52 and low52 else "—")
         c4.metric("MA Signal", cross)
-        # Tips under metrics
         with c2: tip("rsi")
         with c3: tip("52w")
         with c4: tip("cross")
@@ -261,7 +260,7 @@ def cell_css(bg, fg):
     return f"background-color:{bg};color:{fg}"
 
 DARK_GREEN = "#1b5e20"
-DARK_YELLOW = "#f9a825"  # black text readable
+DARK_YELLOW = "#f9a825"
 DARK_RED = "#b71c1c"
 
 def color_band_val(v, green, yellow, reverse=False):
@@ -326,10 +325,7 @@ def _fmt_num(x, digs=2, comma=True):
         return "—"
     try:
         x = float(x)
-        if comma:
-            return f"{x:,.{digs}f}"
-        else:
-            return f"{x:.{digs}f}"
+        return f"{x:,.{digs}f}" if comma else f"{x:.{digs}f}"
     except Exception:
         return "—"
 
@@ -350,9 +346,14 @@ def _fmt_pct(x, digs=2):
         return "—"
 
 # ============================
-# Tabs
+# Tabs (4 tabs now)
 # ============================
-tab1, tab2, tab3 = st.tabs(["🔍 Analysis", "📊 Fundamentals (light)", "🗒️ Watchlist (Factors)"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔍 Analysis",
+    "📊 Fundamentals (light)",
+    "🗒️ Watchlist (Factors)",
+    "💼 My Portfolio"
+])
 
 # ----------------------------
 # Tab 1: Analysis
@@ -392,13 +393,12 @@ with tab2:
             snaps = [fundamental_snapshot(t) for t in tickers_f]
             df = pd.DataFrame(snaps, columns=["Ticker","Last Price","Mkt Cap","Trailing PE","Forward PE","Div Yield","P/B"])
 
-            # Pretty formatting
             df["Last Price"] = df["Last Price"].apply(lambda v: _fmt_num(v, 2))
             df["Mkt Cap"]    = df["Mkt Cap"].apply(_fmt_int)
             df["Trailing PE"]= df["Trailing PE"].apply(lambda v: _fmt_num(v, 2, comma=False))
             df["Forward PE"] = df["Forward PE"].apply(lambda v: _fmt_num(v, 2, comma=False))
             df["P/B"]        = df["P/B"].apply(lambda v: _fmt_num(v, 2, comma=False))
-            df["Div Yield"]  = df["Div Yield"].apply(lambda v: _fmt_pct(v, 2))  # 0.0123 → 1.23%
+            df["Div Yield"]  = df["Div Yield"].apply(lambda v: _fmt_pct(v, 2))
 
             st.dataframe(df, use_container_width=True)
 
@@ -427,14 +427,12 @@ with tab3:
         except Exception as e:
             st.error(f"CSV error: {e}")
 
-    # Weight presets & custom
     st.markdown("#### Factor Weights")
     preset = st.radio(
         "Choose weights",
         ["Balanced (V40 / G20 / M40)", "Value Tilt (V60 / G20 / M20)", "Momentum Tilt (V20 / G20 / M60)", "Custom"],
         horizontal=True,
     )
-
     if preset == "Balanced (V40 / G20 / M40)":
         wV, wG, wM = 40, 20, 40
     elif preset == "Value Tilt (V60 / G20 / M20)":
@@ -458,7 +456,6 @@ with tab3:
         if not tickers_w:
             st.warning("No tickers detected.")
         else:
-            # 1) Batch price for RSI + returns
             try:
                 price_df = fetch_data_batch(tickers_w, period="6mo")
             except Exception as e:
@@ -467,7 +464,6 @@ with tab3:
 
             rows = []
             for t in tickers_w[:50]:
-                # --- RSI + returns
                 rsival = None
                 ret_1m = None
                 ret_3m = None
@@ -482,7 +478,6 @@ with tab3:
                 except Exception:
                     pass
 
-                # --- Fundamentals (heavier): get_info() cached
                 info = get_info_safe(t)
                 pe  = safe_num(info.get("trailingPE"))
                 peg = safe_num(info.get("pegRatio"))
@@ -494,7 +489,6 @@ with tab3:
                 growth_score   = score_growth(roic)
                 momentum_score = score_momentum(rsival, ret_1m, ret_3m)
 
-                # FactorBlend (weights % → 0..1)
                 w_sum = wV + wG + wM
                 wVn, wGn, wMn = wV / w_sum, wG / w_sum, wM / w_sum
                 factor_blend = round(value_score * wVn + growth_score * wGn + momentum_score * wMn, 1)
@@ -537,7 +531,6 @@ with tab3:
                 else:
                     df = df.sort_values("GrowthScore", ascending=False)
 
-                # Dark-theme friendly color bands
                 def styler(row: pd.Series):
                     styles = []
                     for col, val in row.items():
@@ -574,4 +567,269 @@ with tab3:
                         file_name="watchlist_factors.csv",
                         mime="text/csv",
                     )
+
+# ----------------------------
+# Tab 4: My Portfolio (with Sector Breakdown)
+# ----------------------------
+with tab4:
+    st.subheader("💼 My Portfolio — Overview, Signals & Sector Breakdown")
+
+    tmpl = pd.DataFrame({"Symbol": ["AAPL", "MSFT", "NVDA"], "Shares": [10, 5, 3], "CostBasis": [150, 300, 400]})
+    st.download_button(
+        "Download CSV template",
+        data=tmpl.to_csv(index=False),
+        file_name="portfolio_template.csv",
+        mime="text/csv",
+        help="Columns: Symbol, Shares, CostBasis (per share)."
+    )
+
+    colL, colR = st.columns(2)
+    with colL:
+        st.markdown("**Paste positions (one per line):** `SYMBOL, shares, cost_basis`")
+        pasted = st.text_area(
+            "Example:\nAAPL, 10, 150\nMSFT, 5, 300",
+            value="AAPL, 10, 150\nMSFT, 5, 300",
+            height=120
+        )
+    with colR:
+        uploaded_pf = st.file_uploader("…or upload CSV (Symbol, Shares, CostBasis)", type=["csv"])
+
+    rows_in = []
+    if pasted.strip():
+        for line in pasted.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if not parts:
+                continue
+            sym = parts[0].upper()
+            sh = float(parts[1]) if len(parts) > 1 and parts[1] != "" else 0.0
+            cb = float(parts[2]) if len(parts) > 2 and parts[2] != "" else None
+            if sym.replace(".", "").isalnum():
+                rows_in.append({"Symbol": sym, "Shares": sh, "CostBasis": cb})
+
+    if uploaded_pf is not None:
+        try:
+            df_up = pd.read_csv(uploaded_pf)
+            for _, r in df_up.iterrows():
+                sym = str(r.get("Symbol", "")).upper().strip()
+                if not sym or not sym.replace(".", "").isalnum():
+                    continue
+                sh = float(r.get("Shares", 0) or 0.0)
+                cb = r.get("CostBasis", None)
+                cb = float(cb) if cb is not None and cb != "" else None
+                rows_in.append({"Symbol": sym, "Shares": sh, "CostBasis": cb})
+        except Exception as e:
+            st.error(f"CSV parse error: {e}")
+
+    if rows_in:
+        dedup = {}
+        for r in rows_in:
+            dedup[r["Symbol"]] = r
+        positions = list(dedup.values())
+    else:
+        positions = []
+
+    st.markdown("#### Factor Weights")
+    preset_pf = st.radio(
+        "Choose weights",
+        ["Balanced (V40 / G20 / M40)", "Value Tilt (V60 / G20 / M20)", "Momentum Tilt (V20 / G20 / M60)", "Custom"],
+        horizontal=True,
+        key="pf_weights_choice"
+    )
+    if preset_pf == "Balanced (V40 / G20 / M40)":
+        wV_pf, wG_pf, wM_pf = 40, 20, 40
+    elif preset_pf == "Value Tilt (V60 / G20 / M20)":
+        wV_pf, wG_pf, wM_pf = 60, 20, 20
+    elif preset_pf == "Momentum Tilt (V20 / G20 / M60)":
+        wV_pf, wG_pf, wM_pf = 20, 20, 60
+    else:
+        c1, c2, c3 = st.columns(3)
+        with c1: wV_pf = st.slider("Value %", 0, 100, 40, key="pf_wV")
+        with c2: wG_pf = st.slider("Growth %", 0, 100, 20, key="pf_wG")
+        with c3: wM_pf = st.slider("Momentum %", 0, 100, 40, key="pf_wM")
+        if (wV_pf + wG_pf + wM_pf) == 0:
+            st.warning("Weights sum to 0 — defaulting to Balanced.")
+            wV_pf, wG_pf, wM_pf = 40, 20, 40
+
+    if st.button("Analyze Portfolio", type="primary"):
+        if not positions:
+            st.warning("Add positions first (paste or upload).")
+        else:
+            symbols = [p["Symbol"] for p in positions]
+            try:
+                price_df = fetch_data_batch(symbols, period="6mo")
+            except Exception as e:
+                st.error(f"Download error: {e}")
+                price_df = pd.DataFrame()
+
+            pos_rows = []
+            total_value = 0.0
+            total_cost = 0.0
+
+            # For sector breakdown
+            sector_values = {}
+
+            for p in positions:
+                tkr = p["Symbol"]
+                shares = float(p.get("Shares", 0) or 0.0)
+                cost_basis = p.get("CostBasis", None)
+                cost_basis = float(cost_basis) if cost_basis is not None else None
+
+                snap = fundamental_snapshot(tkr)
+                last_px = safe_num(snap.get("Last Price"))
+                if last_px is None:
+                    inf = get_info_safe(tkr)
+                    last_px = safe_num(inf.get("currentPrice"))
+
+                # retrieve sector (cached via get_info_safe)
+                info_sector = get_info_safe(tkr)
+                sector = info_sector.get("sector") or "Unknown"
+
+                rsival = None
+                ret_1m = None
+                ret_3m = None
+                try:
+                    if not price_df.empty:
+                        dfp = extract_single(price_df, tkr)
+                        if not dfp.empty and len(dfp) > 64:
+                            close = dfp["Close"]
+                            rsival = rsi(close, 14).iloc[-1]
+                            ret_1m = float((close.iloc[-1] / close.iloc[-22] - 1.0) * 100.0) if len(close) > 21 else None
+                            ret_3m = float((close.iloc[-1] / close.iloc[-64] - 1.0) * 100.0) if len(close) > 63 else None
+                except Exception:
+                    pass
+
+                pe  = safe_num(info_sector.get("trailingPE"))
+                peg = safe_num(info_sector.get("pegRatio"))
+                pb  = safe_num(info_sector.get("priceToBook"))
+                de  = safe_num(info_sector.get("debtToEquity"))
+                roic = safe_num(info_sector.get("returnOnInvestedCapital") or info_sector.get("returnOnCapitalEmployed"))
+
+                val_score  = score_value(pe, pb, peg, de)
+                grw_score  = score_growth(roic)
+                mom_score  = score_momentum(rsival, ret_1m, ret_3m)
+
+                wsum = wV_pf + wG_pf + wM_pf
+                wVn, wGn, wMn = wV_pf/wsum, wG_pf/wsum, wM_pf/wsum
+                blend = round(val_score*wVn + grw_score*wGn + mom_score*wMn, 1)
+
+                value = last_px * shares if (last_px is not None and shares) else None
+                cost  = (cost_basis * shares) if (cost_basis is not None and shares) else None
+                pl    = (value - cost) if (value is not None and cost is not None) else None
+                plpct = ((value/cost - 1.0)*100.0) if (value is not None and cost and cost != 0) else None
+
+                if value is not None:
+                    total_value += value
+                    sector_values[sector] = sector_values.get(sector, 0.0) + value
+                if cost  is not None:
+                    total_cost  += cost
+
+                pos_rows.append({
+                    "Ticker": tkr,
+                    "Sector": sector,
+                    "Shares": shares if shares else "—",
+                    "Price": round(last_px, 2) if last_px is not None else "—",
+                    "Value": round(value, 2) if value is not None else "—",
+                    "CostBasis": round(cost_basis, 2) if cost_basis is not None else "—",
+                    "P/L %": round(plpct, 2) if plpct is not None else "—",
+                    "RSI(14)": round(rsival, 2) if rsival is not None else "—",
+                    "1M %": round(ret_1m, 2) if ret_1m is not None else "—",
+                    "3M %": round(ret_3m, 2) if ret_3m is not None else "—",
+                    "P/E": round(pe, 2) if pe is not None else "—",
+                    "PEG": round(peg, 2) if peg is not None else "—",
+                    "P/B": round(pb, 2) if pb is not None else "—",
+                    "D/E": round(de, 2) if de is not None else "—",
+                    "ROIC": round(roic, 3) if roic is not None else "—",
+                    "ValueScore": val_score,
+                    "GrowthScore": grw_score,
+                    "MomentumScore": mom_score,
+                    "FactorBlend": blend,
+                })
+
+            col1, col2, col3, col4 = st.columns(4)
+            total_pl = (total_value - total_cost) if (total_value and total_cost) else None
+            total_plpct = ((total_value/total_cost - 1.0)*100.0) if (total_value and total_cost and total_cost != 0) else None
+            col1.metric("Total Value", f"${total_value:,.2f}" if total_value else "—")
+            col2.metric("Total Cost", f"${total_cost:,.2f}" if total_cost else "—")
+            col3.metric("Total P/L %", f"{total_plpct:.2f}%" if total_plpct is not None else "—")
+            col4.metric("Total P/L $", f"${total_pl:,.2f}" if total_pl is not None else "—")
+
+            dfp = pd.DataFrame(pos_rows)
+
+            # Weighted averages (by Value) for RSI & Blend if value available
+            try:
+                dfp["_valnum"] = pd.to_numeric(dfp["Value"], errors="coerce")
+                dfp["_rsi"]    = pd.to_numeric(dfp["RSI(14)"], errors="coerce")
+                dfp["_blend"]  = pd.to_numeric(dfp["FactorBlend"], errors="coerce")
+                if dfp["_valnum"].sum() > 0:
+                    w_avg_rsi = (dfp["_rsi"] * dfp["_valnum"]).sum() / dfp["_valnum"].sum()
+                    w_avg_blend = (dfp["_blend"] * dfp["_valnum"]).sum() / dfp["_valnum"].sum()
+                else:
+                    w_avg_rsi, w_avg_blend = None, None
+            except Exception:
+                w_avg_rsi, w_avg_blend = None, None
+
+            cA, cB = st.columns(2)
+            cA.metric("Weighted Avg RSI", f"{w_avg_rsi:.2f}" if w_avg_rsi is not None else "—")
+            cB.metric("Weighted Avg FactorBlend", f"{w_avg_blend:.2f}" if w_avg_blend is not None else "—")
+
+            # Sort selector
+            sort_pf = st.radio(
+                "Sort positions by",
+                ["Largest Value", "Lowest RSI", "Highest FactorBlend", "Highest P/L %"],
+                horizontal=True
+            )
+            if sort_pf == "Largest Value":
+                dfp["_sort"] = pd.to_numeric(dfp["Value"], errors="coerce")
+                dfp = dfp.sort_values("_sort", ascending=False).drop(columns=["_sort"])
+            elif sort_pf == "Lowest RSI":
+                dfp["_sort"] = pd.to_numeric(dfp["RSI(14)"], errors="coerce")
+                dfp = dfp.sort_values("_sort", ascending=True).drop(columns=["_sort"])
+            elif sort_pf == "Highest FactorBlend":
+                dfp = dfp.sort_values("FactorBlend", ascending=False)
+            else:
+                dfp["_sort"] = pd.to_numeric(dfp["P/L %"], errors="coerce")
+                dfp = dfp.sort_values("_sort", ascending=False).drop(columns=["_sort"])
+
+            def styler(row: pd.Series):
+                styles = []
+                for col, val in row.items():
+                    if col == "P/E":              styles.append(color_band_val(val, 15, 25, reverse=True))
+                    elif col == "P/B":            styles.append(color_band_val(val, 2, 4, reverse=True))
+                    elif col == "PEG":            styles.append(color_band_val(val, 1, 2, reverse=True))
+                    elif col == "D/E":            styles.append(color_band_val(val, 0.5, 1, reverse=True))
+                    elif col == "ROIC":           styles.append(color_band_val(val, 0.15, 0.08, reverse=False))
+                    elif col == "RSI(14)":        styles.append(color_band_rsi(val))
+                    elif col in ["1M %", "3M %", "P/L %"]:
+                        try:
+                            styles.append(cell_css("#1b5e20", "#ffffff") if float(val) > 0 else cell_css("#b71c1c", "#ffffff"))
+                        except:
+                            styles.append("")
+                    elif col in ["ValueScore", "GrowthScore", "MomentumScore", "FactorBlend"]:
+                        styles.append(color_band_val(val, 75, 50, reverse=False))
+                    else:
+                        styles.append("")
+                return styles
+
+            st.dataframe(dfp.style.apply(styler, axis=1).format(precision=2), use_container_width=True)
+
+            # Sector breakdown (by current Value)
+            st.markdown("### 🧩 Sector Breakdown")
+            if total_value > 0 and sector_values:
+                sector_df = pd.DataFrame([
+                    {"Sector": k, "Value": v, "Weight %": (v / total_value) * 100.0}
+                    for k, v in sorted(sector_values.items(), key=lambda kv: kv[1], reverse=True)
+                ])
+                st.dataframe(sector_df.style.format({"Value": "{:,.2f}", "Weight %": "{:.2f}%"}),
+                             use_container_width=True)
+                # Simple bar chart of weights
+                chart_df = sector_df.set_index("Sector")["Weight %"]
+                st.bar_chart(chart_df)
+            else:
+                st.info("No sector data available yet (check that positions fetched current prices).")
+
+            # Convenience: send top FactorBlend to Analysis
+            if st.button("Open top 5 FactorBlend in Analysis"):
+                top_syms = dfp.sort_values("FactorBlend", ascending=False)["Ticker"].head(5).tolist()
+                st.session_state["selected_tickers"] = ",".join(top_syms)
+                st.success(f"Loaded {', '.join(top_syms)} into Analysis tab.")
 
