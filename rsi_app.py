@@ -1,4 +1,4 @@
-# rsi_app.py — RSI • MAs • Factor Watchlist with FactorBlend & dark-theme color bands
+# rsi_app.py — RSI • MAs • Factor Watchlist with FactorBlend, dark-theme bands, and inline tips/guides
 import time
 from typing import List, Dict
 
@@ -10,7 +10,60 @@ st.set_page_config(page_title="RSI & Factor Watchlist", layout="wide")
 st.title("📈 RSI • Moving Averages • Factor Watchlist (Value • Growth • Momentum)")
 
 # ============================
-# Helpers
+# Tips / Guides content
+# ============================
+TIPS = {
+    "rsi": "RSI(14): 0–100 momentum oscillator. >70 often overbought; <30 oversold.",
+    "sma": "Moving Average (SMA): 50/200-day trend lines; longer MAs smooth more.",
+    "cross": "Golden Cross: 50-day SMA crosses above 200-day (bullish). Death Cross: opposite (bearish).",
+    "52w": "52-week High/Low: highest and lowest close over ~1 year (~252 trading days).",
+    "pe": "P/E: Price ÷ trailing 12m earnings per share. Lower can indicate better value (but context matters).",
+    "peg": "PEG: P/E ÷ earnings growth. ~1 is ‘fair’; <1 may indicate good value for growth.",
+    "pb": "P/B: Price ÷ book value per share. Lower can indicate value; sector norms differ.",
+    "de": "D/E: Total debt ÷ shareholder equity. Lower generally means less leverage risk.",
+    "roic": "ROIC: Return on invested capital. >15% often indicates high-quality business.",
+    "ret": "Returns: 1M/3M % price change (approx. 21/63 trading days).",
+    "valuescore": "ValueScore: Composite of P/E, P/B, PEG, D/E (lower is better).",
+    "growthscore": "GrowthScore: Based on ROIC (higher is better).",
+    "momentumscore": "MomentumScore: Combines RSI ‘sweet spot’ and positive 1M/3M returns.",
+    "blend": "FactorBlend: Weighted average of Value, Growth, Momentum (your chosen weights).",
+    "fundamentals": "Quick Fundamentals: uses fast_info first; fills missing fields with get_info().",
+}
+
+def tip(text_key: str):
+    """Return a short inline tip string for captions (respects sidebar toggle)."""
+    if st.session_state.get("show_inline_tips", True):
+        msg = TIPS.get(text_key, "")
+        if msg:
+            st.caption(f"ℹ️ {msg}")
+
+# Sidebar controls: inline tips & Guides
+with st.sidebar:
+    st.markdown("### Settings")
+    st.session_state["show_inline_tips"] = st.toggle("Show inline tips", value=True, help="Show one-line tips under metrics/tables.")
+
+    with st.expander("📘 Guides & Definitions", expanded=False):
+        st.markdown(
+            """
+**RSI(14):** Momentum oscillator (0–100). >70 = overbought; <30 = oversold.  
+**SMA 50/200:** 50/200-day trend lines. Crossovers can signal trend shifts.  
+**Golden/Death Cross:** 50 > 200 = bullish; 50 < 200 = bearish.  
+**52-week High/Low:** Highest/lowest close in ~1 year (~252 trading days).  
+**P/E:** Price ÷ trailing earnings per share. Lower can imply value.  
+**PEG:** P/E ÷ earnings growth. ≈1 fair; <1 often attractive.  
+**P/B:** Price ÷ book value per share. Lower may imply value (sector-specific).  
+**D/E:** Debt ÷ equity. Lower often safer.  
+**ROIC:** Profitability on all invested capital; >15% often high quality.  
+**1M/3M returns:** Approximate price momentum (21/63 trading days).  
+**ValueScore:** Composite of P/E, P/B, PEG, D/E (lower better).  
+**GrowthScore:** Based on ROIC (higher better).  
+**MomentumScore:** RSI ‘sweet spot’ (55–65) + positive 1M/3M returns.  
+**FactorBlend:** Weighted average of Value/Growth/Momentum (choose weights).
+            """
+        )
+
+# ============================
+# Core Helpers
 # ============================
 def _clean_tickers(s: str, cap: int = 10) -> List[str]:
     tickers = [t.strip().upper() for t in s.split(",") if t.strip()]
@@ -67,7 +120,6 @@ def get_fast_info_safe(ticker: str) -> Dict:
 
 @st.cache_data(ttl=21600)  # 6 hours
 def get_info_safe(ticker: str) -> Dict:
-    """Heavier fundamentals via get_info(), cached & gently retried."""
     delays = [0, 1.5]
     for d in delays:
         try:
@@ -81,17 +133,12 @@ def get_info_safe(ticker: str) -> Dict:
     return {}
 
 def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Given a single-ticker DataFrame with columns [Open, High, Low, Close, Volume],
-    compute RSI(14), SMA(50), SMA(200), 52w High/Low, and MA cross signal.
-    """
     out = pd.DataFrame(index=df.index.copy())
     out["Close"] = df["Close"]
     out["RSI14"] = rsi(df["Close"], 14)
     out["SMA50"] = df["Close"].rolling(50).mean()
     out["SMA200"] = df["Close"].rolling(200).mean()
 
-    # Approx last 252 trading days ~ 52 weeks
     last_252 = df.tail(252)
     out.attrs["52w_high"] = float(last_252["High"].max()) if not last_252.empty else None
     out.attrs["52w_low"] = float(last_252["Low"].min()) if not last_252.empty else None
@@ -109,7 +156,6 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def extract_single(df_all: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    """Return flat single-ticker frame with Open/High/Low/Close/Volume."""
     if isinstance(df_all.columns, pd.MultiIndex):
         if ticker not in df_all.columns.get_level_values(0):
             raise KeyError(f"{ticker} not in downloaded data.")
@@ -138,10 +184,15 @@ def display_ticker_panel(ticker: str, df_all: pd.DataFrame):
         c2.metric("RSI(14)", f"{latest_rsi:,.2f}")
         c3.metric("52w High / Low", f"${high52:,.2f} / ${low52:,.2f}" if high52 and low52 else "—")
         c4.metric("MA Signal", cross)
+        # Tips under metrics
+        with c2: tip("rsi")
+        with c3: tip("52w")
+        with c4: tip("cross")
 
         st.line_chart(sig[["Close", "SMA50", "SMA200"]])
+        tip("sma")
         st.line_chart(sig[["RSI14"]])
-        st.caption("RSI guides: >70 overbought, <30 oversold.")
+        tip("rsi")
     except KeyError as e:
         st.error(f"{ticker}: {e}")
     except Exception as e:
@@ -159,12 +210,6 @@ def safe_num(x):
 # Factor scoring helpers
 # ============================
 def band(value, good, mid, reverse=False):
-    """
-    Return 0/50/100 score using thresholds.
-    reverse=True => lower better (e.g., P/E). reverse=False => higher better (e.g., ROIC).
-    For reverse=True: good=upper bound green, mid=upper bound yellow.
-    For reverse=False: good=lower bound green, mid=lower bound yellow.
-    """
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return 0
     try:
@@ -218,7 +263,6 @@ def cell_css(bg, fg):
 DARK_GREEN = "#1b5e20"
 DARK_YELLOW = "#f9a825"  # black text readable
 DARK_RED = "#b71c1c"
-NEUTRAL = "#424242"      # only if needed
 
 def color_band_val(v, green, yellow, reverse=False):
     try:
@@ -245,15 +289,10 @@ def color_band_rsi(v):
     return ""
 
 # ============================
-# Fundamentals fallbacks & formatting (PATCH)
+# Fundamentals fallbacks & formatting
 # ============================
 @st.cache_data(ttl=21600)  # 6h
 def fundamental_snapshot(ticker: str) -> dict:
-    """
-    Return a merged fundamentals snapshot:
-    - try fast_info first (cheap),
-    - fill gaps from get_info() (heavier, cached).
-    """
     fi = get_fast_info_safe(ticker) or {}
     pe = fi.get("trailing_pe")
     fpe = fi.get("forward_pe")
@@ -262,13 +301,12 @@ def fundamental_snapshot(ticker: str) -> dict:
     last_px = fi.get("last_price")
     mcap = fi.get("market_cap")
 
-    # Fallbacks only when missing
     info = {}
     if any(v is None for v in [pe, fpe, div, pb, last_px, mcap]):
         info = get_info_safe(ticker) or {}
         if pe    is None: pe    = info.get("trailingPE")
         if fpe   is None: fpe   = info.get("forwardPE")
-        if div   is None: div   = info.get("dividendYield")  # fraction (e.g., 0.0123)
+        if div   is None: div   = info.get("dividendYield")
         if pb    is None: pb    = info.get("priceToBook")
         if last_px is None: last_px = info.get("currentPrice")
         if mcap  is None: mcap  = info.get("marketCap")
@@ -279,7 +317,7 @@ def fundamental_snapshot(ticker: str) -> dict:
         "Mkt Cap": mcap,
         "Trailing PE": pe,
         "Forward PE": fpe,
-        "Div Yield": div,       # raw fraction if from info
+        "Div Yield": div,  # fraction if from info
         "P/B": pb,
     }
 
@@ -321,8 +359,9 @@ tab1, tab2, tab3 = st.tabs(["🔍 Analysis", "📊 Fundamentals (light)", "🗒�
 # ----------------------------
 with tab1:
     st.subheader("🔍 RSI(14), SMA(50/200), 52-Week Levels")
+    tip("rsi"); tip("sma"); tip("52w")
     default = st.session_state.get("selected_tickers", "AAPL, MSFT, TSLA")
-    t_input = st.text_input("Enter tickers (comma-separated):", default)
+    t_input = st.text_input("Enter tickers (comma-separated):", default, help="Enter up to ~10 symbols to minimize rate limits.")
     tickers = _clean_tickers(t_input, cap=10)
 
     if st.button("Run Analysis", type="primary"):
@@ -337,12 +376,13 @@ with tab1:
                 st.error(f"Download error: {e}")
 
 # ----------------------------
-# Tab 2: Fundamentals (light) — with fallbacks and formatting (PATCH APPLIED)
+# Tab 2: Fundamentals (light)
 # ----------------------------
 with tab2:
     st.subheader("📊 Quick Fundamentals (cached & fallback to get_info for missing fields)")
+    tip("fundamentals"); tip("pe"); tip("pb")
 
-    t_input_f = st.text_input("Tickers (comma-separated):", "AAPL, MSFT", key="funds_input")
+    t_input_f = st.text_input("Tickers (comma-separated):", "AAPL, MSFT", key="funds_input", help="Try a few at a time for speed.")
     tickers_f = _clean_tickers(t_input_f, cap=8)
 
     if st.button("Get Fundamentals"):
@@ -367,7 +407,7 @@ with tab2:
 # ----------------------------
 with tab3:
     st.subheader("🗒️ Watchlist — Factor View (Value • Growth • Momentum)")
-    st.caption("Paste/upload tickers. We’ll compute RSI, 1M/3M returns, and valuation/quality factors with clear color bands.")
+    tip("valuescore"); tip("growthscore"); tip("momentumscore"); tip("blend"); tip("ret"); tip("pe"); tip("peg"); tip("pb"); tip("de"); tip("roic")
 
     colA, colB = st.columns(2)
     with colA:
@@ -404,11 +444,11 @@ with tab3:
     else:
         c1, c2, c3 = st.columns(3)
         with c1:
-            wV = st.slider("Value %", 0, 100, 40)
+            wV = st.slider("Value %", 0, 100, 40, help="Weight on ValueScore (P/E, P/B, PEG, D/E).")
         with c2:
-            wG = st.slider("Growth %", 0, 100, 20)
+            wG = st.slider("Growth %", 0, 100, 20, help="Weight on GrowthScore (ROIC).")
         with c3:
-            wM = st.slider("Momentum %", 0, 100, 40)
+            wM = st.slider("Momentum %", 0, 100, 40, help="Weight on MomentumScore (RSI band + returns).")
         total = wV + wG + wM
         if total == 0:
             st.warning("Weights sum to 0 — defaulting to Balanced.")
