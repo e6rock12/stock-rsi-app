@@ -343,21 +343,28 @@ def _fmt_pct(x, digs=2):
 @st.cache_data(ttl=43200)  # 12h
 def sp500_sector_map() -> Dict[str, str]:
     """
-    Build {ticker -> sector} for the S&P 500. Uses yfinance's tickers_sp500(),
-    then sector from get_info_safe() (cached).
+    Build {ticker -> sector} for the S&P 500 from Wikipedia.
+    Normalizes tickers (e.g., BRK.B -> BRK-B) to match Yahoo symbols.
     """
-    tickers = []
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     try:
-        tickers = yf.tickers_sp500()
-    except Exception:
-        pass
-
-    sector_map = {}
-    for t in tickers:
-        info = get_info_safe(t)  # cached
-        sec = info.get("sector") or "Unknown"
-        sector_map[t] = sec
-    return sector_map
+        tables = pd.read_html(url)
+        if not tables:
+            return {}
+        df = tables[0]
+        if "Symbol" not in df.columns or "GICS Sector" not in df.columns:
+            return {}
+        syms = (
+            df["Symbol"].astype(str)
+            .str.strip()
+            .str.upper()
+            .str.replace(".", "-", regex=False)  # Yahoo format
+        )
+        secs = df["GICS Sector"].astype(str).str.strip()
+        return dict(zip(syms, secs))
+    except Exception as e:
+        st.error(f"Could not fetch S&P 500 list: {e}")
+        return {}
 
 def chaikin_money_flow(df: pd.DataFrame, period: int = 20) -> pd.Series:
     """
