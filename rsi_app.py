@@ -1,4 +1,5 @@
-# rsi_app.py — RSI • MAs • Factor Watchlist with FactorBlend, dark-theme bands, Tips/Guides, and My Portfolio + Sector Breakdown
+# rsi_app.py — RSI • MAs • Factor Watchlist with FactorBlend, Tips/Guides,
+# My Portfolio (sector breakdown), and Sector Scanner (Top 10 by factor)
 import time
 from typing import List, Dict
 
@@ -25,7 +26,7 @@ TIPS = {
     "ret": "Returns: 1M/3M % price change (approx. 21/63 trading days).",
     "valuescore": "ValueScore: Composite of P/E, P/B, PEG, D/E (lower is better).",
     "growthscore": "GrowthScore: Based on ROIC (higher is better).",
-    "momentumscore": "MomentumScore: Combines RSI ‘sweet spot’ and positive 1M/3M returns.",
+    "momentumscore": "MomentumScore: RSI ‘sweet spot’ and positive 1M/3M returns.",
     "blend": "FactorBlend: Weighted average of Value, Growth, Momentum (your chosen weights).",
     "fundamentals": "Quick Fundamentals: uses fast_info first; fills missing fields with get_info().",
 }
@@ -256,32 +257,26 @@ def score_momentum(rsi_val, ret_1m, ret_3m):
     return round((s_rsi + s_1m + s_3m) / 3, 1)
 
 # Dark-theme friendly color utilities
-def cell_css(bg, fg):
-    return f"background-color:{bg};color:{fg}"
-
+def cell_css(bg, fg): return f"background-color:{bg};color:{fg}"
 DARK_GREEN = "#1b5e20"
 DARK_YELLOW = "#f9a825"
 DARK_RED = "#b71c1c"
 
 def color_band_val(v, green, yellow, reverse=False):
-    try:
-        x = float(v)
-    except:
-        return ""
-    if reverse:  # lower better
+    try: x = float(v)
+    except: return ""
+    if reverse:
         if x <= green: return cell_css(DARK_GREEN, "#ffffff")
         if x <= yellow: return cell_css(DARK_YELLOW, "#000000")
         return cell_css(DARK_RED, "#ffffff")
-    else:        # higher better
+    else:
         if x >= green: return cell_css(DARK_GREEN, "#ffffff")
         if x >= yellow: return cell_css(DARK_YELLOW, "#000000")
         return cell_css(DARK_RED, "#ffffff")
 
 def color_band_rsi(v):
-    try:
-        r = float(v)
-    except:
-        return ""
+    try: r = float(v)
+    except: return ""
     if 55 <= r <= 65: return cell_css(DARK_GREEN, "#ffffff")
     if 45 <= r < 55 or 65 < r <= 70: return cell_css(DARK_YELLOW, "#000000")
     if r < 30 or r > 70: return cell_css(DARK_RED, "#ffffff")
@@ -321,8 +316,7 @@ def fundamental_snapshot(ticker: str) -> dict:
     }
 
 def _fmt_num(x, digs=2, comma=True):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return "—"
+    if x is None or (isinstance(x, float) and pd.isna(x)): return "—"
     try:
         x = float(x)
         return f"{x:,.{digs}f}" if comma else f"{x:.{digs}f}"
@@ -330,29 +324,62 @@ def _fmt_num(x, digs=2, comma=True):
         return "—"
 
 def _fmt_int(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return "—"
+    if x is None or (isinstance(x, float) and pd.isna(x)): return "—"
     try:
         return f"{float(x):,.0f}"
     except Exception:
         return "—"
 
 def _fmt_pct(x, digs=2):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return "—"
+    if x is None or (isinstance(x, float) and pd.isna(x)): return "—"
     try:
         return f"{float(x)*100:.{digs}f}%"
     except Exception:
         return "—"
 
 # ============================
-# Tabs (4 tabs now)
+# Sector universe & inflows helpers
 # ============================
-tab1, tab2, tab3, tab4 = st.tabs([
+@st.cache_data(ttl=43200)  # 12h
+def sp500_sector_map() -> Dict[str, str]:
+    """
+    Build {ticker -> sector} for the S&P 500. Uses yfinance's tickers_sp500(),
+    then sector from get_info_safe() (cached).
+    """
+    tickers = []
+    try:
+        tickers = yf.tickers_sp500()
+    except Exception:
+        pass
+
+    sector_map = {}
+    for t in tickers:
+        info = get_info_safe(t)  # cached
+        sec = info.get("sector") or "Unknown"
+        sector_map[t] = sec
+    return sector_map
+
+def chaikin_money_flow(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """
+    CMF = sum(MoneyFlowMultiplier * Volume, N) / sum(Volume, N)
+    MoneyFlowMultiplier = ((Close - Low) - (High - Close)) / (High - Low)
+    """
+    h = df["High"]; l = df["Low"]; c = df["Close"]; v = df["Volume"]
+    hl = (h - l).replace(0, pd.NA)
+    mfm = (((c - l) - (h - c)) / hl).fillna(0.0)
+    mfv = mfm * v
+    cmf = (mfv.rolling(period).sum()) / (v.rolling(period).sum())
+    return cmf
+
+# ============================
+# Tabs (5 tabs now)
+# ============================
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔍 Analysis",
     "📊 Fundamentals (light)",
     "🗒️ Watchlist (Factors)",
-    "💼 My Portfolio"
+    "💼 My Portfolio",
+    "🏷️ Sector Scanner"
 ])
 
 # ----------------------------
@@ -664,8 +691,6 @@ with tab4:
             pos_rows = []
             total_value = 0.0
             total_cost = 0.0
-
-            # For sector breakdown
             sector_values = {}
 
             for p in positions:
@@ -680,7 +705,6 @@ with tab4:
                     inf = get_info_safe(tkr)
                     last_px = safe_num(inf.get("currentPrice"))
 
-                # retrieve sector (cached via get_info_safe)
                 info_sector = get_info_safe(tkr)
                 sector = info_sector.get("sector") or "Unknown"
 
@@ -755,7 +779,7 @@ with tab4:
 
             dfp = pd.DataFrame(pos_rows)
 
-            # Weighted averages (by Value) for RSI & Blend if value available
+            # Weighted averages (by Value)
             try:
                 dfp["_valnum"] = pd.to_numeric(dfp["Value"], errors="coerce")
                 dfp["_rsi"]    = pd.to_numeric(dfp["RSI(14)"], errors="coerce")
@@ -812,24 +836,155 @@ with tab4:
 
             st.dataframe(dfp.style.apply(styler, axis=1).format(precision=2), use_container_width=True)
 
-            # Sector breakdown (by current Value)
+            # Sector breakdown
             st.markdown("### 🧩 Sector Breakdown")
             if total_value > 0 and sector_values:
-                sector_df = pd.DataFrame([
-                    {"Sector": k, "Value": v, "Weight %": (v / total_value) * 100.0}
-                    for k, v in sorted(sector_values.items(), key=lambda kv: kv[1], reverse=True)
-                ])
+                sector_df = pd.DataFrame(
+                    [{"Sector": k, "Value": v, "Weight %": (v / total_value) * 100.0}
+                     for k, v in sorted(sector_values.items(), key=lambda kv: kv[1], reverse=True)]
+                )
                 st.dataframe(sector_df.style.format({"Value": "{:,.2f}", "Weight %": "{:.2f}%"}),
                              use_container_width=True)
-                # Simple bar chart of weights
-                chart_df = sector_df.set_index("Sector")["Weight %"]
-                st.bar_chart(chart_df)
+                st.bar_chart(sector_df.set_index("Sector")["Weight %"])
             else:
                 st.info("No sector data available yet (check that positions fetched current prices).")
 
-            # Convenience: send top FactorBlend to Analysis
             if st.button("Open top 5 FactorBlend in Analysis"):
                 top_syms = dfp.sort_values("FactorBlend", ascending=False)["Ticker"].head(5).tolist()
                 st.session_state["selected_tickers"] = ",".join(top_syms)
                 st.success(f"Loaded {', '.join(top_syms)} into Analysis tab.")
+
+# ----------------------------
+# Tab 5: Sector Scanner — Top 10 by Value / Growth / Momentum / Inflows
+# ----------------------------
+with tab5:
+    st.subheader("🏷️ Sector Scanner — Top 10 by Factor")
+
+    with st.spinner("Building S&P 500 sector list…"):
+        sector_map = sp500_sector_map()
+    if not sector_map:
+        st.error("Could not build sector map. Try again later.")
+    else:
+        sectors = sorted({sec for sec in sector_map.values()})
+        col1, col2 = st.columns(2)
+        with col1:
+            default_idx = sectors.index("Information Technology") if "Information Technology" in sectors else 0
+            sector_choice = st.selectbox("Choose a sector", sectors, index=default_idx)
+        with col2:
+            mode = st.selectbox(
+                "Ranking mode",
+                ["Top 10 Value", "Top 10 Growth", "Top 10 Momentum", "Top 10 Inflows"],
+                index=0
+            )
+
+        tickers_in_sector = [t for t, s in sector_map.items() if s == sector_choice]
+        st.caption(f"Universe: {len(tickers_in_sector)} tickers in {sector_choice}")
+
+        cap = st.slider("Max symbols to scan (to avoid rate limits)", 10, 100, min(60, len(tickers_in_sector)))
+        scan_list = tickers_in_sector[:cap]
+
+        if st.button("Scan Sector", type="primary"):
+            if not scan_list:
+                st.warning("No tickers to scan.")
+            else:
+                try:
+                    prices = fetch_data_batch(scan_list, period="6mo")
+                except Exception as e:
+                    st.error(f"Download error: {e}")
+                    prices = pd.DataFrame()
+
+                rows = []
+                for t in scan_list:
+                    rsi14 = None; r1m = None; r3m = None; inflow = None
+                    try:
+                        if not prices.empty:
+                            dfp = extract_single(prices, t)
+                            if not dfp.empty and len(dfp) > 64:
+                                close = dfp["Close"]
+                                rsi14 = rsi(close, 14).iloc[-1]
+                                if len(close) > 21:
+                                    r1m = float((close.iloc[-1] / close.iloc[-22] - 1.0) * 100.0)
+                                if len(close) > 63:
+                                    r3m = float((close.iloc[-1] / close.iloc[-64] - 1.0) * 100.0)
+                                inflow = chaikin_money_flow(dfp, 20).iloc[-1]
+                    except Exception:
+                        pass
+
+                    info = get_info_safe(t)
+                    pe  = safe_num(info.get("trailingPE"))
+                    peg = safe_num(info.get("pegRatio"))
+                    pb  = safe_num(info.get("priceToBook"))
+                    de  = safe_num(info.get("debtToEquity"))
+                    roic = safe_num(info.get("returnOnInvestedCapital") or info.get("returnOnCapitalEmployed"))
+
+                    val_score  = score_value(pe, pb, peg, de)
+                    grw_score  = score_growth(roic)
+                    mom_score  = score_momentum(rsi14, r1m, r3m)
+
+                    rows.append({
+                        "Ticker": t,
+                        "Sector": sector_choice,
+                        "P/E": round(pe, 2) if pe is not None else "—",
+                        "PEG": round(peg, 2) if peg is not None else "—",
+                        "P/B": round(pb, 2) if pb is not None else "—",
+                        "D/E": round(de, 2) if de is not None else "—",
+                        "ROIC": round(roic, 3) if roic is not None else "—",
+                        "RSI(14)": round(rsi14, 2) if rsi14 is not None else "—",
+                        "1M %": round(r1m, 2) if r1m is not None else "—",
+                        "3M %": round(r3m, 2) if r3m is not None else "—",
+                        "ValueScore": val_score,
+                        "GrowthScore": grw_score,
+                        "MomentumScore": mom_score,
+                        "Inflows(CMF20)": round(float(inflow), 3) if inflow is not None else "—",
+                    })
+
+                if not rows:
+                    st.info("No results computed.")
+                else:
+                    df = pd.DataFrame(rows)
+
+                    if mode == "Top 10 Value":
+                        key = "ValueScore"; ascending = False
+                    elif mode == "Top 10 Growth":
+                        key = "GrowthScore"; ascending = False
+                    elif mode == "Top 10 Momentum":
+                        key = "MomentumScore"; ascending = False
+                    else:
+                        key = "Inflows(CMF20)"; ascending = False
+
+                    df["_rank_key"] = pd.to_numeric(df[key], errors="coerce")
+                    top = df.sort_values("_rank_key", ascending=ascending).drop(columns=["_rank_key"]).head(10)
+
+                    def styler(row: pd.Series):
+                        styles = []
+                        for col, val in row.items():
+                            if col == "P/E":              styles.append(color_band_val(val, 15, 25, reverse=True))
+                            elif col == "P/B":            styles.append(color_band_val(val, 2, 4, reverse=True))
+                            elif col == "PEG":            styles.append(color_band_val(val, 1, 2, reverse=True))
+                            elif col == "D/E":            styles.append(color_band_val(val, 0.5, 1, reverse=True))
+                            elif col == "ROIC":           styles.append(color_band_val(val, 0.15, 0.08, reverse=False))
+                            elif col == "RSI(14)":        styles.append(color_band_rsi(val))
+                            elif col in ["1M %", "3M %"]:
+                                try:
+                                    styles.append(cell_css("#1b5e20", "#ffffff") if float(val) > 0 else cell_css("#b71c1c", "#ffffff"))
+                                except:
+                                    styles.append("")
+                            elif col in ["ValueScore", "GrowthScore", "MomentumScore"]:
+                                styles.append(color_band_val(val, 75, 50, reverse=False))
+                            elif col == "Inflows(CMF20)":
+                                try:
+                                    styles.append(cell_css("#1b5e20", "#ffffff") if float(val) > 0 else cell_css("#b71c1c", "#ffffff"))
+                                except:
+                                    styles.append("")
+                            else:
+                                styles.append("")
+                        return styles
+
+                    st.markdown(f"### Top 10 — {mode} in {sector_choice}")
+                    st.dataframe(top.style.apply(styler, axis=1).format(precision=2), use_container_width=True)
+
+                    if st.button("Open these in Analysis"):
+                        chosen = top["Ticker"].tolist()
+                        st.session_state["selected_tickers"] = ",".join(chosen)
+                        st.success(f"Loaded {', '.join(chosen)} into Analysis tab.")
 
